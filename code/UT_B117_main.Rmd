@@ -1,0 +1,279 @@
+---
+title: "UT_B117_main"
+output: html_document
+---
+This script loads in the raw data files and calls the functions that run the logistic growth model of B117 vs wildtype and the SEIR model the projects infections
+```{r setup, include=FALSE}
+rm(list = ls())
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(dplyr)
+library(EpiEstim)
+library(tidyr)
+library(reshape2)
+library(cowplot)
+library(knitr)
+library(flexmix)
+library(zoo)
+library(DescTools)
+source("UT_B117_functions.R")
+theme_set(theme_cowplot())
+ggplot + background_grid(major = "xy", minor = "xy")
+options(warn = -1)
+```
+Load in SGTF data and PCT case data
+```{r}
+DATA_PATH_CTS<-'../data/pctData_posOnly_210505.csv'
+DATA_PATH_CASES<-'../data/UT_data_streams.csv'
+DATA_PATH_INTROS<-'../data/introductions_Jan15.csv'
+
+```
+Dates and parameters for analysis
+```{r}
+spring_arrival_date<-as.Date("2021-01-16", format = "%Y-%m-%d")
+spring_last_date<-as.Date("2021-04-09", format = "%Y-%m-%d")
+spring_end_semester_date<-as.Date("2021-05-23", format = "%Y-%m-%d")
+initial_estimate_date<-as.Date("2021-02-12", format = "%Y-%m-%d")
+fall_arrival_date<-as.Date("2020-08-20", format = "%Y-%m-%d")
+fall_last_date<-as.Date("2020-12-19", format = "%Y-%m-%d")
+
+# Some global parameters
+QC_thres<-28
+delta<-1/7 #(1/duration of infectiousness)
+gamma<- 1/3 # (1/duration of latent period)
+dt<-0.1
+mean_GI<-5.8 # average generation interval (for EpiEstim)
+std_GI<-2.3 # std dev generation interval (for EpiEstim)
+N_POPULATION <-30000 # estimated "active" population at UT
+Rt_cap<-2.5 # We assume that R(t) never went above this value in the fall, but that major surges were just due to increased testing...
+prop_prev_inf_Aug = 0.05 
+nsamps<-500 # number of samples from the distributions for uncertainty
+```
+Process the Ct data to get SGTF and non-SGTF positives from the Ct values of the 3 target genes
+```{r}
+Ct_data<-read.csv(DATA_PATH_CTS) %>%
+  mutate(test_date = as.Date(test_date))
+Ct_data<-Ct_data %>%select(test_date, N.gene.Ct, S.gene.Ct, ORF1ab.Ct)%>%
+  filter(test_date>= spring_arrival_date)%>%
+  filter(test_date<=spring_last_date)
+Ct_data<-Ct_data[order(Ct_data$test_date),]
+Ct_data<-Ct_data%>%rowwise()%>%mutate(mean_Ct = mean(c(N.gene.Ct, S.gene.Ct, ORF1ab.Ct), na.rm = TRUE))
+Ct_data['S_dropout']<-is.na(Ct_data$S.gene.Ct)
+Ct_data$poss_B117<-Ct_data$S_dropout==TRUE & Ct_data$N.gene.Ct<QC_thres
+Ct_data['strain']<-rep(NA, nrow(Ct_data))
+for (i in 1:nrow(Ct_data)){
+  if (Ct_data$S_dropout[i] == TRUE){
+    Ct_data$strain[i]<-'SGTF'
+  }
+  else 
+    Ct_data$strain[i]<-'non_SGTF'
+}
+
+#Make a day to day summary of SGTF presence
+Ct_data_daily_long<-Ct_data%>%filter(mean_Ct<QC_thres)%>%
+  group_by(test_date, strain)%>%summarise(n = n())
+Ct_data_daily_summary<-Ct_data_daily_long%>%
+  pivot_wider(names_from = strain, values_from = n, values_fill = 0)
+Ct_data_daily_summary<-Ct_data_daily_summary%>%group_by(test_date)%>%
+  mutate(n_Sdrop = SGTF,
+         n_Spos = non_SGTF,
+         n_pos = SGTF+non_SGTF,
+         prev_SGTF = SGTF/n_pos,
+         SE_prev = sqrt(prev_SGTF*(1-prev_SGTF)/n_pos))
+# Export the daily data for fitting. Will use this to feed into Woody's SGTF.R code
+write.csv(Ct_data_daily_summary, '../data/Ct_data.csv')
+# Make a dataset used for the initial fitting from data through Feb.
+Ct_data_init<-Ct_data_daily_summary%>%filter(test_date<=initial_estimate_date)
+write.csv(Ct_data_init, '../data/Ct_data_init.csv', row.names = FALSE)
+
+
+# Make figures with frequency of SGTF over time as well as cases colored by SGTF status
+path ="../out/dailySGTF.png"
+plt_freq<-ggplot(Ct_data_daily_summary, aes(x = test_date, y = 100*(prev_SGTF)), color = "black") + geom_point() + geom_errorbar(aes(ymin = 100*(prev_SGTF - SE_prev), ymax = 100*(prev_SGTF+SE_prev)), width = 0.2, position = position_dodge(0.5))+
+xlab ('Test Collection Date') + ylab ('Frequency (%) of cases that are S dropouts') + ggtitle('Daily frequency of S dropouts with low Ct values')
+plt_freq
+ggsave(filename = path, device = "png", dpi = 700) 
+
+path = "../out/stackedbarSGTF.png"
+stacked<-ggplot(Ct_data_daily_long, aes(x = test_date, y = n, fill = strain))  + geom_bar(position = "stack", stat = "identity") + xlab('Test Collection Date') + ylab('Number of low Ct positives') + theme(legend.position="top")+ scale_fill_discrete(name = "S gene presence", labels = c("S+", "S-"))
+stacked
+ggsave(filename = path, device = "png", dpi = 700)
+
+# Use SGTF data set to call function to fit the logistic model with uncertainty from SGTF presence. 
+
+#output: b0 and b1 in logistic growth model, current B117 prevalence
+b0 = -2.861
+b1 = 0.040
+p_curr = 0.627
+tr_adv = 0.56 # This should probably be a function of b0 and b1? 
+
+
+# Generate  a single f_t (multiplicative factor on beta) using the SGTF data 
+#f_t<-get_ft(b0, b1, p_curr, tr_adv, tsim)
+```
+Process the daily case data from UT students
+```{r}
+case_data<-read.csv(DATA_PATH_CASES)%>%mutate(date = as.Date(CollectionDate, format = "%Y-%m-%d"))%>%
+                                                select(date, student_pos, student_PCT_pos,
+                                                       total_student_PCT_tests)%>%
+                                                filter(date>=fall_arrival_date, date<=spring_last_date+7)
+# Add some columns to the case data
+case_data<-case_data%>%mutate(positivity = student_PCT_pos/total_student_PCT_tests)
+sevendayPCTpos = c(rep(NA,3), rollapply(case_data$positivity, 7, function(x) mean(x, na.rm = TRUE)), rep(NA,3))
+sevendayPCTcases = c(rep(NA,3), rollapply(case_data$student_PCT_pos, 7, function(x) mean(x, na.rm = TRUE)), rep(NA,3))
+case_data$sevendayPCTpos = sevendayPCTpos
+case_data$sevendayPCTcases = sevendayPCTcases
+
+case_data%>%ggplot() + geom_line(aes(x = date, y = sevendayPCTpos)) + geom_bar(aes(x = date, y = positivity), stat = "identity") + ylab('PCT positivity') + xlab('Test Collection Date')
+
+case_data%>%ggplot() + geom_line(aes(x = date, y = sevendayPCTcases)) + geom_bar(aes(x = date, y = student_PCT_pos), stat = "identity") + ylab('Student PCT cases') + xlab('Test Collection Date')
+
+# Estimate R(t) in the fall and in the spring.
+#daily_p_local<-get_daily_p_local(case_data, fall_arrival_date)
+case_data_fall<-case_data%>%filter(date<=fall_last_date)
+case_data_spring<-case_data%>%filter(date>=spring_arrival_date)
+cases_fall<-case_data_fall$student_pos
+
+avg_tests_per_day<-mean(case_data_spring$total_student_PCT_tests, na.rm = TRUE)
+case_data_spring$positivity[is.na(case_data_spring$positivity)]=case_data_spring$sevendayPCTpos[is.na(case_data_spring$positivity)]
+# Still need to do something to account for 10-day pause during the Texas winter freeze where no tests were collected, use the 3 days before and after it to impute. 
+case_data_around_freeze<-case_data%>%filter(date<=as.Date("2021-02-24"), date>=as.Date("2021-02-10"),
+                                            total_student_PCT_tests>0)
+avg_positivity_freeze<-sum(case_data_around_freeze$student_PCT_pos)/sum(case_data_around_freeze$total_student_PCT_tests)
+case_data_spring$positivity[is.na(case_data_spring$positivity)]=avg_positivity_freeze
+cases_spring<-round(avg_tests_per_day*case_data_spring$positivity,0)
+
+Rt_summary_fall<-Rt_fxn_cases(cases_fall, case_data_fall, fall_arrival_date, fall_last_date, mean_GI,std_GI)
+Rt_summary_spring<-Rt_fxn_cases(cases_spring, case_data_spring, spring_arrival_date, spring_last_date+7, mean_GI,std_GI)
+
+# Export the Rt data for use in the SEIR model
+write.csv(Rt_summary_fall, '../data/Rt_students_fall.csv', row.names = FALSE)
+write.csv(Rt_summary_spring, '../data/Rt_students_spring.csv', row.names = FALSE)
+
+Rt_summary_fall%>%ggplot() + geom_line(aes(x =dates, y = Rt_medians))+ geom_ribbon(aes(x = dates, ymin = Rt_lowerbounds, ymax = Rt_upperbounds), alpha = 0.1)
+Rt_summary_spring%>%ggplot() + geom_line(aes(x =dates, y = Rt_medians))+ geom_ribbon(aes(x = dates, ymin = Rt_lowerbounds, ymax = Rt_upperbounds), alpha = 0.1)
+```
+Run the SEIR model using the fall case data to estimate the number previously infected
+```{r}
+fall_intros<-read.csv(DATA_PATH_INTROS)%>%filter(Location == "total", Time == "Fall")%>%select(ML_infections_lo, ML_infections_med, ML_infections_hi)
+I0bounds<-c(fall_intros$ML_infections_lo, fall_intros$ML_infections_hi)
+
+par_table<-data.frame(dt, delta, gamma, N_POPULATION, Rt_cap, prop_prev_inf_Aug, nsamps)
+
+cumIJan<-run_fall_SEIR(par_table, I0bounds, Rt_summary_fall)
+cumICI<-(cumIJan/N_POPULATION)%>%quantile(probs = c(0.025, 0.5, 0.975))
+print(cumICI)
+```
+Use the previous infection estimates from the fall, spring Rt, the current estimates of variant prevalence, and variant increase in transmissibility to project infections with and without the variant.
+```{r}
+spring_intros<-read.csv(DATA_PATH_INTROS)%>%filter(Location == "total", Time == "Spring")%>%select(ML_infections_lo, ML_infections_med, ML_infections_hi)
+I0bounds<-c(fall_intros$ML_infections_lo, fall_intros$ML_infections_hi)
+# option to also include uncertainty in b0, b1 and tr_adv, but leave as is for now
+spring_par_table<-data.frame(dt, delta, gamma, N_POPULATION, Rt_cap, nsamps, b0, b1, tr_adv)
+p_curr_distrib<-runif(nsamps, 0.501, 0.739) # This should be from Woody's output, this is a placeholder
+iRts<-c(18, 14) # indices in spring Rt that correspond to the faster and slower spread scenarios
+
+out_list<-run_spring_SEIR(spring_par_table, case_data_spring, Rt_summary_spring, iRts, spring_last_date, cumIJan, p_curr_distrib)
+
+df_t_sim<-out_list[[1]] # contains the time course of runs for 500 simulations for both scenarios
+df_t<-out_list[[2]] # contains the median and bounds of the time course runs for both scenarios
+df_summary<-out_list[[3]] # contains all the summary statistics for static variables
+
+```
+Make some plots of the infection projection outputs
+```{r}
+#Factor increase in transmission rate over time
+path = "../out/factor_inc_t.png"
+plt_ft<-ggplot(df_t) + geom_line(aes (x = tsim, y = f_t_median)) + geom_ribbon(aes(x = tsim, ymin = f_t_lb, ymax = f_t_ub), alpha = 0.1) + xlab('Time') + ylab('Multiplicative factor on transmission rate')
+plt_ft
+
+N<-N_POPULATION
+case_data_spring['calib']<-rep('fit', nrow(case_data_spring))
+for(i in 1:nrow(case_data_spring)){
+  if (case_data_spring$date[i]>spring_last_date){
+    case_data_spring$calib[i]<-'observed'
+  }
+}
+
+ggsave(filename = path, device = "png", dpi = 700)
+
+# Infection estimates alongside observed test positivity
+case_data_spring<-case_data_spring%>%filter(date<=spring_last_date)
+path = "../out/both_scenarios.png"
+plot1<-ggplot() + geom_line(data = df_t_sim, aes(x = dates, y = 1000*I_variant/N, group = samples), alpha = 0.05, color = "tan1") +
+  geom_line(data = df_t_sim, aes(x = dates, y = 1000*I_novariant/N, group = samples), alpha = 0.02, color = "mediumpurple") +
+  geom_line(data = df_t, aes(x = springdates, y = 1000*Imediannv/N), size = 1, color = "mediumpurple")+ geom_line(data = df_t, aes(x = springdates, y = 1000*Imedianv/N), size = 1, color = "tan1") +
+  geom_point(data = case_data_spring, aes(x = date, y = 1000*sevendayPCTpos), size = 0.5) +facet_wrap(~scenario) + 
+  xlab ("Date") + ylab('COVID-19 infections per 1000')+theme(strip.background = element_blank(), aspect.ratio = 0.8) + coord_cartesian(ylim = c(0, 50))
+plot1
+ggsave(filename = path, device = "png", dpi = 700)
+
+# Only faster spread scenario
+df_fast<-df_t_sim%>%filter(scenario=="Faster spread")
+df_t_fast<-df_t%>%filter(scenario == "Faster spread")
+path ="../out/fast_spaghettis.png"
+fast_only<-ggplot() + geom_line(data = df_fast, aes(x = dates, y = 1000*I_variant/N, group = samples), alpha = 0.05, color = "tan1") +
+  geom_line(data = df_fast, aes(x = dates, y = 1000*I_novariant/N, group = samples), alpha = 0.02, color = "mediumpurple") +
+  geom_line(data = df_t_fast, aes(x = springdates, y = 1000*Imediannv/N), size = 1, color = "mediumpurple")+ geom_line(data = df_t_fast, aes(x = springdates, y = 1000*Imedianv/N), size = 1, color = "tan1") +
+  geom_point(data = case_data_spring, aes(x = date, y = 1000*sevendayPCTpos), size = 1) + scale_x_date(date_labels="%b-%d")+
+  xlab ("Date") + ylab("") +theme(strip.background = element_blank())+ coord_cartesian(ylim = c(0, 50)) + ylab('COVID-19 infections per 1000') + xlab ("Date")
+fast_only
+ggsave(filename = path, device = "png", dpi = 1000, width = 7, height = 5, units="in")
+save.image(file="foobar.Rdata")
+```
+
+
+
+
+
+
+
+
+
+
+Make figures with frequency of SGTF over time as well as cases colored by SGTF status
+```{r}
+# Make figures with frequency of SGTF over time as well as cases colored by SGTF status
+path ="../out/dailySGTF.png"
+plt_freq<-ggplot(Ct_data_daily_summary, aes(x = test_date, y = 100*(prev_SGTF)), color = "black") + geom_point() + geom_errorbar(aes(ymin = 100*(prev_SGTF - SE_prev), ymax = 100*(prev_SGTF+SE_prev)), width = 0.2, position = position_dodge(0.5))+
+xlab ('Test Collection Date') + ylab ('Frequency (%) of cases that are S dropouts') + ggtitle('Daily frequency of S dropouts with low Ct values')
+plt_freq
+ggsave(filename = path, device = "png", dpi = 700) 
+
+path = "../out/stackedbarSGTF.png"
+stacked<-ggplot(Ct_data_daily_long, aes(x = test_date, y = n, fill = strain))  + geom_bar(position = "stack", stat = "identity") + xlab('Test Collection Date') + ylab('Number of low Ct positives') + theme(legend.position="top")+ scale_fill_discrete(name = "S gene presence", labels = c("S+", "S-"))
+stacked
+ggsave(filename = path, device = "png", dpi = 700)
+```
+
+
+
+
+
+
+
+
+
+
+Exploratory data analysis of the SGTF vs non-SGTF viral loads
+```{r}
+# Make a violin plot comparing the Ct values of side-by-side SGTF to non-SGTF
+path="../out/Ct_distribs.png"
+Ct_values<-ggplot(data=Ct_data, aes(factor(strain), mean_Ct), group = strain)+ geom_violin(position = position_dodge(width = 0.9)) + geom_boxplot(width = 0.1)+geom_jitter(shape = 16, alpha = 0.3, position = position_jitter(width=NULL, height = NULL))+ geom_hline(yintercept = QC_thres, linetype = "dashed") + xlab('Possible Strain') + ylab('Ct value') + ggtitle('Ct values by strain') 
+Ct_values
+ggsave(filename = path, device = "png", dpi = 700)
+
+# Summary statistics
+n_SGTF<-as.numeric(sum(Ct_data%>%filter(S_dropout == TRUE)%>%summarise(n())))
+n_non_SGTF<-nrow(Ct_data)-n_SGTF
+n_SGTF_low_Ct<-as.numeric(sum(Ct_data%>%filter(S_dropout==TRUE & mean_Ct<QC_thres)%>%summarise(n())))
+n_non_SGTF_low_Ct<-as.numeric(sum(Ct_data%>%filter(S_dropout==FALSE & mean_Ct<QC_thres)%>%summarise(n())))
+Ct_all_combined<-Ct_data%>%group_by(strain)%>%
+  summarise(median_Ct = quantile(mean_Ct, 0.5),
+    Ct_lb = quantile(mean_Ct, 0.025),
+    Ct_ub = quantile(mean_Ct, 0.975),
+    n_samps = n())
+
+# Run a Kolmogorov-Smirnov test to see if there is a statistically significant difference in the Ct value distributions
+ks.test(Ct_data$mean_Ct[Ct_data$strain == "SGTF"], Ct_data$mean_Ct[Ct_data$strain == "non-SGTF"])
+```
