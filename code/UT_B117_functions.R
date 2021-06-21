@@ -169,7 +169,7 @@ run_fall_SEIR<-function(par_table, I0bounds, Rt_fall){
   }
   dates<-Rt_fall$dates
   tsim<-seq(from = 0, to = length(dates)-1, by=dt)
-  
+  Rt_cap<-2.5 # assume Rt never gets above this 
   # sample from uncertainty in Rts and
   Rts<-matrix(nrow=length(dates), ncol=nsamps) # rows are time, columns are samples 
   for (i in 1:length(dates)){
@@ -274,318 +274,367 @@ run_fall_SEIR<-function(par_table, I0bounds, Rt_fall){
 run_spring_SEIR<-function(par_table, case_data_spring, Rt_spring, iRts, spring_last_date, R0s, p_curr_distrib){
 
 
-var_names<-colnames(par_table)
-for (i in 1:length(var_names)){
-  assign(var_names[i], as.double(par_table[i]))
-}
-
-# Assign dates
-springdates <- seq(Rt_spring$dates[1], spring_end_semester_date, "days")
-calibdates <- seq(Rt_spring$dates[1], spring_last_date, "days")
-projdates<-seq(spring_last_date, spring_end_semester_date, "days")
-
-# get time vectors
-tsim<-seq(from = 0, to = length(springdates)-1, by = dt)
-tobs<-seq(from = 0, to = length(calibdates)-1, by = dt)
-
-f_ts<-matrix(nrow = length(tsim), ncol = nsamps)
-# Want these f_ts to have uncertainty
-for( i in 1:nsamps){
-  p_curr<-sample(p_curr_distrib[i],1)
-  f_ts[,i]<-get_ft(b0, b1, p_curr, tr_adv, tsim)
-}
-
-# Output multiplicative factor on transmission rate over time. 
-f_t_median<-apply( f_ts , 1 , quantile , probs = 0.5 , na.rm = TRUE )
-f_t_lb<-apply( f_ts , 1 , quantile , probs = 0.025 , na.rm = TRUE )
-f_t_ub<-apply( f_ts , 1 , quantile , probs = 0.975 , na.rm = TRUE )
-
-
-Rts<-matrix(nrow=length(tobs), ncol=nsamps)
-for (i in 1:length(calibdates)){
-  mean_val<-Rt_spring$Rt_mean[i]
-  var<-Rt_spring$Rt_var[i]
-  b<-mean_val/var
-  a<-mean_val*b
-  Rts[i,]<-rgamma(nsamps, shape = a, rate = b)
-}
-# expand Rts 
-Rts<-data.frame(Rts)
-Rts<-Rts%>%slice(rep(1:n(), each = 1/dt))
-
-# Use PCT data from the first 4 days (some of which was entry testing) to get initial infection estimates
-n_pos_first_week <-sum(case_data_spring$student_PCT_pos[1:4])
-n_tests_first_week<-sum(case_data_spring$total_student_PCT_tests[1:4])
-# get the CI on the bounds of the initial proportion of student infected. 
-init_prevCI<-rbeta(n=nsamps, shape1 = 1+n_pos_first_week, shape2 = 1+n_tests_first_week-n_pos_first_week)%>%quantile(probs = c(0.5, 0.025, 0.975))
-I0lb<-init_prevCI[2]
-I0med<-init_prevCI[1]
-I0ub<-init_prevCI[3]
-
-
-scenarios<-c('Faster spread', 'Slower spread')
-iRts_dt<-iRts*(1/dt)-9
-RthiCI<-quantile(Rts[iRts_dt[1],], probs = c(0.5, 0.025, 0.975))
-RtloCI<-quantile(Rts[iRts_dt[2],], probs = c(0.5, 0.025, 0.975))
-Rtlolb<-RtloCI[2]
-Rtlomed<-RtloCI[1]
-Rtloub<-RtloCI[3]
-Rthilb<-RthiCI[2]
-Rthimed<-RthiCI[1]
-Rthiub<-RthiCI[3]
-
-for (m in 1:length(scenarios)){
-  # Set scenario
-  iRt<-iRts_dt[m] 
-  #Rt_val<-iRts[m]
-  dates<-rep(springdates, nsamps)
-  t<-rep(tsim, nsamps)
-  scenario<-rep(scenarios[m], nsamps*length(tsim))
-  for (j in 1:2){ # Run twice through, once for with variant and once for without variant
-    Imat<-matrix(nrow = length(tsim), ncol = nsamps)
-    cumIvec<-matrix(nrow = 1, ncol = nsamps) # total number infected in this time period
-    cumIAVvec<-matrix(nrow = 1, ncol = nsamps) 
-    Rvec<-matrix(nrow = 1, ncol = nsamps) # total immune at end of time period
-    betavec<-matrix(nrow =1, ncol = nsamps) # Stores the constant beta for each simulation 
-    cumIBVvec<-matrix(nrow = 1, ncol = nsamps)
-    
-    for (k in 1:nsamps){
-      Rt<-Rts[,k] # Get an Rt trajectory
-      R0<-sample(R0s,1) # sample a single number immune at beginning of the spring semester 
-      
-      # Sample from posterior distribution of probability infected in the first week to get the 
-      # initial number infected
-      init_prev<- rbeta(n=1, shape1 = 1+n_pos_first_week, shape2 = 1+n_tests_first_week-n_pos_first_week)
-      I0 = init_prev*N_POPULATION
-      
-      
-      # Preallocate compartments 
-      S<-rep(0,length(tsim))
-      E<-rep(0,length(tsim))
-      I<-rep(0,length(tsim))
-      R<-rep(0,length(tsim))
-      cumI<-rep(0,length(tsim))
-      cumIAV<-rep(0, length(tsim))
-      newI<-rep(0, length(tsim))
-      pV<-rep(0, length(tsim))
-      beta_t<-rep(0, length(tsim))
-      
-      for (i in 1:length(tsim)){
-        if (i==1){
-          # Assign initial conditions without variant
-          S[i]<-N_POPULATION-I0-R0 -delta/gamma*I0
-          E[i]<-delta/gamma*I0
-          I[i]<-I0
-          R[i]<-R0
-          cumI[i]<-I0
-          beta_t[i]<-Rt[i]*delta*N_POPULATION/S[i] # calculate the first beta
-          
-        }
-        # Before variant, infections in wildtype proceed using R(t) from cases
-        else if (i>1 & i<=length(tobs)){
-          S[i]<-S[i-1] + dt*(-(beta_t[i-1]*I[i-1])*(S[i-1]/N_POPULATION))
-          beta_t[i]<-Rt[i]*delta*N_POPULATION/S[i]
-          E[i]<-E[i-1] + dt*(beta_t[i-1]*((S[i-1]*I[i-1])/N_POPULATION) - gamma*E[i-1])
-          I[i]<-I[i-1] + dt*(gamma*E[i-1] - delta*I[i-1])
-          R[i]<-R[i-1] + dt*(delta*I[i-1])
-          cumI[i]<-cumI[i-1] + dt*((beta_t[i-1]*I[i-1])*(S[i-1]/N_POPULATION))
-          
-          
-        }
-        # After tobs, introduce variant
-        else if (i>length(tobs)) {
-          
-          if (j==1){ # only add in the variant if j==1, for j==2 no variant case
-            variant_factor<-f_ts[,k]
-          }
-          if (j==2){ # only add in the variant if j==1, for j==2 no variant case
-            variant_factor<- rep(1, length(tsim)) 
-          }
-          Rt_i<-Rt[iRt]
-          # Hold beta constant except for the variant factor 
-          beta_t[i]<-(Rt_i*delta*N_POPULATION/S[(length(tobs))])*variant_factor[i]
-          S[i]<-S[i-1] + dt*(-(beta_t[i-1]*I[i-1])*(S[i-1]/N_POPULATION))
-          E[i]<-E[i-1] + dt*(beta_t[i-1]*((S[i-1]*I[i-1])/N_POPULATION) - gamma*E[i-1])
-          I[i]<-I[i-1] + dt*(gamma*E[i-1] - delta*I[i-1])
-          R[i]<-R[i-1] + dt*(delta*I[i-1])
-          cumI[i]<-cumI[i-1] + dt*((beta_t[i-1]*I[i-1])*(S[i-1]/N_POPULATION))
-          cumIAV[i]<-cumIAV[i-1] + dt*((beta_t[i-1]*I[i-1])*(S[i-1]/N_POPULATION))
-          
-          
-        }
-        
-        
-      } # end time loop
-      
-      # Save total infections over time
-      Imat[,k]<- I
-      cumIvec[1,k]<-cumI[length(tsim)]
-      cumIAVvec[1,k]<-cumIAV[length(tsim)]
-      cumIBVvec[1,k]<-cumI[length(tobs)+1] + R0
-      Rvec[1,k]<-R[length(tsim)]
-      betavec[1, k]<-beta_t[length(tobs)+1]
-      
-      
-      colname<-toString(k)
-      if(k==1){
-        Ialls<-data.frame(tsim)
-        Ialls[[colname]]<-I
-      }
-      else{
-        Ialls[[colname]]<-I
-      }
-    } # end k loop for nsamps simulations
-    
-    # Assign Iall data frame to either be no variant or variant
-    if (j==1){ # variant present
-      Iallv<-Ialls
-      # Get median and lower and upper bounds over time
-      Imedianv<-apply( Imat , 1 , quantile , probs = 0.5 , na.rm = TRUE )
-      Ilbv<-apply( Imat , 1 , quantile , probs = 0.025, na.rm = TRUE )
-      Iubv<-apply( Imat , 1 , quantile , probs = 0.975, na.rm = TRUE )
-      # Get the median and bounds of cumulative infections at end
-      cumImedianv<-as.numeric(quantile(cumIvec, probs = 0.5, na.rm = TRUE))
-      cumIlbv<-as.numeric(quantile(cumIvec, probs = 0.025, na.rm = TRUE))
-      cumIubv<-as.numeric(quantile(cumIvec, probs = 0.975, na.rm = TRUE))
-      cumIAVvmedian<-as.numeric(quantile(cumIAVvec, probs = 0.5, na.rm = TRUE))
-      cumIAVvlb<-as.numeric(quantile(cumIAVvec, probs = 0.025, na.rm = TRUE))
-      cumIAVvub<-as.numeric(quantile(cumIAVvec, probs = 0.975, na.rm = TRUE))
-      cumIBVmedian<-as.numeric(quantile(cumIBVvec/N_POPULATION, probs = 0.5, na.rm = TRUE))
-      cumIBVlb<-as.numeric(quantile(cumIBVvec/N_POPULATION, probs = 0.025, na.rm = TRUE))
-      cumIBVub<-as.numeric(quantile(cumIBVvec/N_POPULATION, probs = 0.975, na.rm = TRUE))
-      # Get the median and bounds of total immune at end
-      Rmedianv<-as.numeric(quantile(Rvec, probs = 0.5, na.rm = TRUE))
-      Rlbv<-as.numeric(quantile(Rvec, probs = 0.025, na.rm = TRUE))
-      Rubv<-as.numeric(quantile(Rvec, probs = 0.975, na.rm = TRUE))
-      # Get the betaCI
-      betamedian<-as.numeric(quantile(betavec, probs = 0.5, na.rm = TRUE))
-      betalb<-as.numeric(quantile(betavec, probs = 0.025, na.rm = TRUE))
-      betaub<-as.numeric(quantile(betavec, probs = 0.975, na.rm = TRUE))
-      # Find the maximum number infected in each time series (along each column)
-      maxIvmed<-as.numeric(apply(Imat, 2, max)%>%quantile(probs =0.5))
-      maxIvlb<-as.numeric(apply(Imat, 2, max)%>%quantile(probs =0.025))
-      maxIvub<-as.numeric(apply(Imat, 2, max)%>%quantile(probs = 0.975))
-      imaxIv<-as.numeric(apply(Imat, 2, which.max)%>%quantile(probs =c(0.025, 0.5, 0.975)))
-      tmaxvmed<-springdates[imaxIv[2]]
-      tmaxvlb<-springdates[imaxIv[1]]
-      tmaxvub<-springdates[imaxIv[3]]
-      pct_maxIvmed<-100*maxIvmed/N_POPULATION
-      pct_maxIvlb<-100*maxIvlb/N_POPULATION
-      pct_maxIvub<-100*maxIvub/N_POPULATION
-      
-    }
-    if (j==2){ # no variant
-      Iallnv<-Ialls # assign I all to no variant
-      # Get median and lower and upper bounds over time
-      Imediannv<-apply( Imat , 1 , quantile , probs = 0.5 , na.rm = TRUE )
-      Ilbnv<-apply( Imat , 1 , quantile , probs = 0.025, na.rm = TRUE )
-      Iubnv<-apply( Imat , 1 , quantile , probs = 0.975, na.rm = TRUE )
-      
-      # Get the median and bounds of cumulative infections at end
-      cumImediannv<-as.numeric(quantile(cumIvec, probs = 0.5, na.rm = TRUE))
-      cumIlbnv<-as.numeric(quantile(cumIvec, probs = 0.025, na.rm = TRUE))
-      cumIubnv<-as.numeric(quantile(cumIvec, probs = 0.975, na.rm = TRUE))
-      # Get the median and bounds of total immune at end
-      cumIAVnvmedian<-as.numeric(quantile(cumIAVvec, probs = 0.5, na.rm = TRUE))
-      cumIAVnvlb<-as.numeric(quantile(cumIAVvec, probs = 0.025, na.rm = TRUE))
-      cumIAVnvub<-as.numeric(quantile(cumIAVvec, probs = 0.975, na.rm = TRUE))
-      Rmediannv<-as.numeric(quantile(Rvec, probs = 0.5, na.rm = TRUE))
-      Rlbnv<-as.numeric(quantile(Rvec, probs = 0.025, na.rm = TRUE))
-      Rubnv<-as.numeric(quantile(Rvec, probs = 0.975, na.rm = TRUE))
-      # Get the beta CI
-      betamedian<-as.numeric(quantile(betavec, probs = 0.5, na.rm = TRUE))
-      betalb<-as.numeric(quantile(betavec, probs = 0.025, na.rm = TRUE))
-      betaub<-as.numeric(quantile(betavec, probs = 0.975, na.rm = TRUE))
-      # Find the maximum number infected in each time series (along each column)
-      maxInvmed<-as.numeric(apply(Imat, 2, max)%>%quantile(probs =0.5))
-      maxInvlb<-as.numeric(apply(Imat, 2, max)%>%quantile(probs =0.025))
-      maxInvub<-as.numeric(apply(Imat, 2, max)%>%quantile(probs = 0.975))
-      imaxInv<-apply(Imat, 2, which.max)%>%quantile(probs =c(0.025, 0.5, 0.975))
-      tmaxnvmed<-springdates[imaxInv[2]]
-      tmaxnvlb<-springdates[imaxInv[1]]
-      tmaxnvub<-springdates[imaxInv[3]]
-      pct_maxInvmed<-100*maxInvmed/N_POPULATION
-      pct_maxInvlb<-100*maxInvlb/N_POPULATION
-      pct_maxInvub<-100*maxInvub/N_POPULATION
-      pct_nvatvmaxmed<-100*as.numeric(Imat[imaxIv[2],]%>%quantile(probs = 0.5, na.rm = TRUE))/N_POPULATION
-      pct_nvatvmaxlb<-100*as.numeric(Imat[imaxIv[2],]%>%quantile(probs = 0.025, na.rm = TRUE))/N_POPULATION
-      pct_nvatvmaxub<-100*as.numeric(Imat[imaxIv[2],]%>%quantile(probs = 0.975, na.rm = TRUE))/N_POPULATION
-    }
-    
-  } # end j loop for variant no variant
-  
-  
-  
-  # Make the data long to stack all of the simulation runs
-  I_longvariant<-Iallv%>%melt(id.vars = c("tsim"), variable.name = "samples", value.name = "I_t_v")
-  I_longnv<-Iallnv%>%melt(id.vars = c("tsim"), variable.name = "samples", value.name = "I_t_nv")
-  I_variant<-I_longvariant$I_t_v
-  I_novariant<-I_longnv$I_t_nv
-  samples<-I_longvariant$samples
-  if (m==1){
-    # First make a long data frame with all of the samples stacked (nrows = n_timesteps*nsamples)
-    df_t_sim<-data.frame(t,scenario,samples, I_variant, I_novariant) # Long one with all sims
-    scenario<-scenario[1:length(tsim)]
-    ik<-t==round(t) # only keep who timesteps (days)
-    df_t_sim<-df_t_sim[ik,]
-    df_t_sim$dates<-rep(springdates, nsamps)
-    
-    # Then make the time course summary data frame (nrows = n_timesteps)
-    df_t<-data.frame(tsim, scenario, Imedianv, Ilbv, Iubv, Imediannv, Ilbnv, Iubnv, f_t_median, f_t_lb,
-                     f_t_ub) # time course and scenario
-    scenario<-scenario[1]
-    ikeep<-tsim == round(tsim) # only keep whole timesteps (days)
-    df_t<-df_t[ikeep,]
-    df_t$springdates<-springdates
-    
-    df_summary<-data.frame(scenario, I0med, I0lb, I0ub,
-                           cumImedianv, cumIlbv, cumIubv, maxIvmed, maxIvlb, maxIvub, tmaxvmed, 
-                           tmaxvlb, tmaxvub, Rmedianv, Rlbv, Rubv, betamedian, betalb, betaub, cumImediannv,
-                           cumIlbnv, cumIubnv,
-                           cumIAVvmedian, cumIAVvlb, cumIAVvub, cumIAVnvmedian, cumIAVnvlb, cumIAVnvub,
-                           cumIBVmedian, cumIBVlb, cumIBVub,
-                           maxInvlb, maxInvub, tmaxnvmed, tmaxnvlb, tmaxnvub, Rmediannv, Rlbnv, Rubnv, 
-                           pct_maxIvmed, pct_maxIvlb, pct_maxIvub, pct_maxInvmed, pct_maxInvlb,
-                           pct_maxInvub, pct_nvatvmaxmed, pct_nvatvmaxlb, pct_nvatvmaxub, Rtlomed, Rtlolb,
-                           Rtloub, Rthimed, Rthilb, Rthiub)
-    
-    
-    
-  }
-  else{
-    # all simulations
-    df_t_simi<-data.frame(t,scenario, samples, I_variant, I_novariant)
-    ik<-t==round(t)
-    df_t_simi<-df_t_simi[ik,]
-    df_t_simi$dates<-rep(springdates, nsamps)
-    df_t_sim<-rbind(df_t_sim, df_t_simi) # stack the dataframes
-    # just median and lb/ubs
-    scenario<-scenario[1:length(tsim)]
-    df_ti<-data.frame(tsim, scenario, Imedianv, Ilbv, Iubv, Imediannv, Ilbnv, Iubnv, f_t_median, f_t_lb,
-                      f_t_ub)
-    ikeep<-tsim == round(tsim)
-    df_ti<-df_ti[ikeep,]
-    df_ti$springdates<-springdates
-    df_t<-rbind(df_t, df_ti)
-    # summary statistics
-    scenario<-scenario[1]
-    df_summaryi<-data.frame(scenario,I0med, I0lb, I0ub, 
-                            cumImedianv, cumIlbv, cumIubv, maxIvmed, maxIvlb, maxIvub, tmaxvmed, 
-                            tmaxvlb, tmaxvub, Rmedianv, Rlbv, Rubv, betamedian, betalb, betaub, cumImediannv,
-                            cumIlbnv, cumIubnv,
-                            cumIAVvmedian, cumIAVvlb, cumIAVvub, cumIAVnvmedian, cumIAVnvlb, cumIAVnvub,
-                            cumIBVmedian, cumIBVlb, cumIBVub,
-                            maxInvlb, maxInvub, tmaxnvmed, tmaxnvlb, tmaxnvub, Rmediannv, Rlbnv, Rubnv, 
-                            pct_maxIvmed, pct_maxIvlb, pct_maxIvub, pct_maxInvmed, pct_maxInvlb,
-                            pct_maxInvub, pct_nvatvmaxmed, pct_nvatvmaxlb, pct_nvatvmaxub, Rtlomed, Rtlolb,
-                            Rtloub, Rthimed, Rthilb, Rthiub)
-    df_summary<-rbind(df_summary, df_summaryi)
+  var_names<-colnames(par_table)
+  for (i in 1:length(var_names)){
+    assign(var_names[i], as.double(par_table[i]))
   }
   
+  # Assign dates
+  springdates <- seq(Rt_spring$dates[1], spring_end_semester_date, "days")
+  calibdates <- seq(Rt_spring$dates[1], spring_last_date, "days")
+  projdates<-seq(spring_last_date, spring_end_semester_date, "days")
+  
+  # get time vectors
+  tsim<-seq(from = 0, to = length(springdates)-1, by = dt)
+  tobs<-seq(from = 0, to = length(calibdates)-1, by = dt)
   
   
-} # end m loop for scenarios
-out_list<-list(df_t_sim, df_t, df_summary)
-return(out_list)
+  # Use PCT data from the first 4 days (some of which was entry testing) to get initial infection estimates
+  n_pos_first_week <-sum(case_data_spring$student_PCT_pos[1:4])
+  n_tests_first_week<-sum(case_data_spring$total_student_PCT_tests[1:4])
+  # get the CI on the bounds of the initial proportion of student infected. 
+  init_prevCI<-rbeta(n=nsamps, shape1 = 1+n_pos_first_week, shape2 = 1+n_tests_first_week-n_pos_first_week)%>%quantile(probs = c(0.5, 0.025, 0.975))
+  I0lb<-init_prevCI[2]
+  I0med<-init_prevCI[1]
+  I0ub<-init_prevCI[3]
+  
+  f_ts<-matrix(nrow = length(tsim), ncol = nsamps)
+  p_ts<-matrix(nrow = length(tsim), ncol = nsamps)
+  
+  # Assign the parameter combinations that we will apply to both the variant and no variant simulations for matched statistics.
+  # R0s & cumIJan:
+  R0s<-sample(R0s, nsamps)
+  init_prev<-rbeta(n=nsamps, shape1 = 1+n_pos_first_week, shape2 = 1+n_tests_first_week-n_pos_first_week)
+  for( i in 1:nsamps){
+    p_curr<-p_curr_distrib[i] 
+    #b0<-b0_distrib[i]
+    #b1<-b1_distrib[i]
+    #tr_adv<-tr_adv_distrib[i]
+    # f_t must correspond to the correct b0, b1, pcurr, and tr_adv parameters
+    f_ts[,i]<-get_ft(b0, b1, p_curr, tr_adv, tsim)
+    p_ts[,i] = (1/(1+exp(-(b0+b1*tsim))))
+  }
+
+  
+  f_t_median<-apply( f_ts , 1 , quantile , probs = 0.5 , na.rm = TRUE )
+  f_t_lb<-apply( f_ts , 1 , quantile , probs = 0.025 , na.rm = TRUE )
+  f_t_ub<-apply( f_ts , 1 , quantile , probs = 0.975 , na.rm = TRUE )
+  df_test<-data.frame(tsim, f_t_median, f_t_lb, f_t_ub)
+  
+  Rts<-matrix(nrow=length(calibdates), ncol=nsamps)
+  for (i in 1:length(calibdates)){
+    mean_val<-Rt_spring$Rt_mean[i]
+    var<-Rt_spring$Rt_var[i]
+    b<-mean_val/var
+    a<-mean_val*b
+    Rts[i,]<-rgamma(nsamps, shape = a, rate = b)
+  }
+  
+  # expand Rts 
+  Rts<-data.frame(Rts)
+  Rts<-Rts%>%slice(rep(1:n(), each = 1/dt))
+  
+  
+  scenarios<-c('Faster spread', 'Slower spread')
+  iRts_dt<-iRts*(1/dt)-9
+  RthiCI<-quantile(Rts[iRts_dt[1],], probs = c(0.5, 0.025, 0.975))
+  RtloCI<-quantile(Rts[iRts_dt[2],], probs = c(0.5, 0.025, 0.975))
+  Rtlolb<-RtloCI[2]
+  Rtlomed<-RtloCI[1]
+  Rtloub<-RtloCI[3]
+  Rthilb<-RthiCI[2]
+  Rthimed<-RthiCI[1]
+  Rthiub<-RthiCI[3]
+  
+  for (m in 1:length(scenarios)){
+    # Set scenario
+    iRt<-iRts_dt[m] 
+    dates<-rep(springdates, nsamps)
+    t<-rep(tsim, nsamps)
+    scenario<-rep(scenarios[m], nsamps*length(tsim))
+    for (j in 1:2){ # Run twice through, once for with variant and once for without variant
+      Imat<-matrix(nrow = length(tsim), ncol = nsamps)
+      B117mat<-matrix(nrow = length(tsim), ncol = nsamps)
+      cumIvec<-matrix(nrow = 1, ncol = nsamps) # total number infected in this time period
+      cumIAVvec<-matrix(nrow = 1, ncol = nsamps) 
+      Rvec<-matrix(nrow = 1, ncol = nsamps) # total immune at end of time period
+      betavec<-matrix(nrow =1, ncol = nsamps) # Stores the constant beta for each simulation 
+      cumIBVvec<-matrix(nrow = 1, ncol = nsamps)
+      
+      for (k in 1:nsamps){
+        # get the parameter combo and initial condition
+        Rt<-Rts[,k] # Get an Rt trajectory
+        R0<-R0s[k]
+        I0 = init_prev[k]*N_POPULATION
+        variant_factor<-f_ts[,k]
+        p_t<-p_ts[,k]
+        
+        
+        # Preallocate compartments 
+        S<-rep(0,length(tsim))
+        E<-rep(0,length(tsim))
+        I<-rep(0,length(tsim))
+        R<-rep(0,length(tsim))
+        cumI<-rep(0,length(tsim))
+        cumIAV<-rep(0, length(tsim))
+        newI<-rep(0, length(tsim))
+        pV<-rep(0, length(tsim))
+        beta_t<-rep(0, length(tsim))
+        
+        for (i in 1:length(tsim)){
+          if (i==1){
+            # Assign initial conditions without variant
+            S[i]<-N_POPULATION-I0-R0 -delta/gamma*I0
+            E[i]<-delta/gamma*I0
+            I[i]<-I0
+            R[i]<-R0
+            cumI[i]<-I0
+            beta_t[i]<-Rt[i]*delta*N_POPULATION/S[i] # calculate the first beta
+            
+          }
+          # Before variant, infections in wildtype proceed using R(t) from cases
+          else if (i>1 & i<=length(tobs)){
+            S[i]<-S[i-1] + dt*(-(beta_t[i-1]*I[i-1])*(S[i-1]/N_POPULATION))
+            beta_t[i]<-Rt[i]*delta*N_POPULATION/S[i]
+            E[i]<-E[i-1] + dt*(beta_t[i-1]*((S[i-1]*I[i-1])/N_POPULATION) - gamma*E[i-1])
+            I[i]<-I[i-1] + dt*(gamma*E[i-1] - delta*I[i-1])
+            R[i]<-R[i-1] + dt*(delta*I[i-1])
+            cumI[i]<-cumI[i-1] + dt*((beta_t[i-1]*I[i-1])*(S[i-1]/N_POPULATION))
+            
+            
+          }
+          # After tobs, introduce variant
+          else if (i>length(tobs)) {
+            if (j==2){ # if j==2, no variant case.
+              variant_factor<- rep(1, length(tsim)) 
+            }
+            Rt_i<-Rt[iRt]
+            # Hold beta constant except for the variant factor 
+            beta_t[i]<-(Rt_i*delta*N_POPULATION/S[(length(tobs))])*variant_factor[i]
+            S[i]<-S[i-1] + dt*(-(beta_t[i-1]*I[i-1])*(S[i-1]/N_POPULATION))
+            E[i]<-E[i-1] + dt*(beta_t[i-1]*((S[i-1]*I[i-1])/N_POPULATION) - gamma*E[i-1])
+            I[i]<-I[i-1] + dt*(gamma*E[i-1] - delta*I[i-1])
+            R[i]<-R[i-1] + dt*(delta*I[i-1])
+            cumI[i]<-cumI[i-1] + dt*((beta_t[i-1]*I[i-1])*(S[i-1]/N_POPULATION))
+            cumIAV[i]<-cumIAV[i-1] + dt*((beta_t[i-1]*I[i-1])*(S[i-1]/N_POPULATION))
+            
+            
+          }
+          
+          
+        } # end time loop
+        
+        # Save total infections over time
+        Imat[,k]<- I
+        B117mat[,k]<-I*p_t
+        cumIvec[1,k]<-cumI[length(tsim)]
+        cumIAVvec[1,k]<-cumIAV[length(tsim)]
+        cumIBVvec[1,k]<-cumI[length(tobs)+1] + R0
+        Rvec[1,k]<-R[length(tsim)]
+        betavec[1, k]<-beta_t[length(tobs)+1]
+        
+        
+        colname<-toString(k)
+        if(k==1){
+          Ialls<-data.frame(tsim)
+          Ialls[[colname]]<-I
+        }
+        else{
+          Ialls[[colname]]<-I
+        }
+      } # end k loop for nsamps simulations
+      
+      # Assign Iall data frame to either be no variant or variant
+      if (j==1){ # variant present
+        Iallv<-Ialls
+        # Get median and lower and upper bounds over time
+        Imedianv<-apply( Imat , 1 , quantile , probs = 0.5 , na.rm = TRUE )
+        Ilbv<-apply( Imat , 1 , quantile , probs = 0.025, na.rm = TRUE )
+        Iubv<-apply( Imat , 1 , quantile , probs = 0.975, na.rm = TRUE )
+        # Get the median and bounds of cumulative infections at end
+        cumImedianv<-as.numeric(quantile(cumIvec, probs = 0.5, na.rm = TRUE))
+        cumIlbv<-as.numeric(quantile(cumIvec, probs = 0.025, na.rm = TRUE))
+        cumIubv<-as.numeric(quantile(cumIvec, probs = 0.975, na.rm = TRUE))
+        cumIAVvmedian<-as.numeric(quantile(cumIAVvec, probs = 0.5, na.rm = TRUE))
+        cumIAVvlb<-as.numeric(quantile(cumIAVvec, probs = 0.025, na.rm = TRUE))
+        cumIAVvub<-as.numeric(quantile(cumIAVvec, probs = 0.975, na.rm = TRUE))
+        cumIBVmedian<-as.numeric(quantile(cumIBVvec/N_POPULATION, probs = 0.5, na.rm = TRUE))
+        cumIBVlb<-as.numeric(quantile(cumIBVvec/N_POPULATION, probs = 0.025, na.rm = TRUE))
+        cumIBVub<-as.numeric(quantile(cumIBVvec/N_POPULATION, probs = 0.975, na.rm = TRUE))
+        # Get the median and bounds of total immune at end
+        Rmedianv<-as.numeric(quantile(Rvec, probs = 0.5, na.rm = TRUE))
+        Rlbv<-as.numeric(quantile(Rvec, probs = 0.025, na.rm = TRUE))
+        Rubv<-as.numeric(quantile(Rvec, probs = 0.975, na.rm = TRUE))
+        # Get the betaCI
+        betamedian<-as.numeric(quantile(betavec, probs = 0.5, na.rm = TRUE))
+        betalb<-as.numeric(quantile(betavec, probs = 0.025, na.rm = TRUE))
+        betaub<-as.numeric(quantile(betavec, probs = 0.975, na.rm = TRUE))
+        # Find the maximum number infected in each time series (along each column)
+        maxIvmed<-as.numeric(apply(Imat, 2, max)%>%quantile(probs =0.5))
+        maxIvlb<-as.numeric(apply(Imat, 2, max)%>%quantile(probs =0.025))
+        maxIvub<-as.numeric(apply(Imat, 2, max)%>%quantile(probs = 0.975))
+        imaxIv<-as.numeric(apply(Imat, 2, which.max)%>%quantile(probs =c(0.025, 0.5, 0.975)))
+        tmaxvmed<-springdates[imaxIv[2]]
+        tmaxvlb<-springdates[imaxIv[1]]
+        tmaxvub<-springdates[imaxIv[3]]
+        pct_maxIvmed<-100*maxIvmed/N_POPULATION
+        pct_maxIvlb<-100*maxIvlb/N_POPULATION
+        pct_maxIvub<-100*maxIvub/N_POPULATION
+        
+        # Save the overall cumulative infections for the spring semester and the cumulative infections
+        #after the variant, in order by the parameter combo
+        cumIvec_v<-cumIvec
+        cumIAVvec_v<-cumIAVvec
+        
+      }
+      if (j==2){ # no variant
+        Iallnv<-Ialls # assign I all to no variant
+        # Get median and lower and upper bounds over time
+        Imediannv<-apply( Imat , 1 , quantile , probs = 0.5 , na.rm = TRUE )
+        Ilbnv<-apply( Imat , 1 , quantile , probs = 0.025, na.rm = TRUE )
+        Iubnv<-apply( Imat , 1 , quantile , probs = 0.975, na.rm = TRUE )
+        B117medianv<-apply( B117mat , 1 , quantile , probs = 0.5 , na.rm = TRUE )
+        B117lbv<-apply( B117mat , 1 , quantile , probs = 0.025, na.rm = TRUE )
+        B117ubv<-apply( B117mat , 1 , quantile , probs = 0.975, na.rm = TRUE )
+        WTmedianv<-Imedianv-B117medianv
+        WTlbv<-Ilbv-B117lbv
+        WTubv<-Iubv-B117ubv
+        # Get the median and bounds of cumulative infections at end
+        cumImediannv<-as.numeric(quantile(cumIvec, probs = 0.5, na.rm = TRUE))
+        cumIlbnv<-as.numeric(quantile(cumIvec, probs = 0.025, na.rm = TRUE))
+        cumIubnv<-as.numeric(quantile(cumIvec, probs = 0.975, na.rm = TRUE))
+        # Get the median and bounds of total immune at end
+        cumIAVnvmedian<-as.numeric(quantile(cumIAVvec, probs = 0.5, na.rm = TRUE))
+        cumIAVnvlb<-as.numeric(quantile(cumIAVvec, probs = 0.025, na.rm = TRUE))
+        cumIAVnvub<-as.numeric(quantile(cumIAVvec, probs = 0.975, na.rm = TRUE))
+        Rmediannv<-as.numeric(quantile(Rvec, probs = 0.5, na.rm = TRUE))
+        Rlbnv<-as.numeric(quantile(Rvec, probs = 0.025, na.rm = TRUE))
+        Rubnv<-as.numeric(quantile(Rvec, probs = 0.975, na.rm = TRUE))
+        # Get the beta CI
+        betamedian<-as.numeric(quantile(betavec, probs = 0.5, na.rm = TRUE))
+        betalb<-as.numeric(quantile(betavec, probs = 0.025, na.rm = TRUE))
+        betaub<-as.numeric(quantile(betavec, probs = 0.975, na.rm = TRUE))
+        # Find the maximum number infected in each time series (along each column)
+        maxInvmed<-as.numeric(apply(Imat, 2, max)%>%quantile(probs =0.5))
+        maxInvlb<-as.numeric(apply(Imat, 2, max)%>%quantile(probs =0.025))
+        maxInvub<-as.numeric(apply(Imat, 2, max)%>%quantile(probs = 0.975))
+        imaxInv<-apply(Imat, 2, which.max)%>%quantile(probs =c(0.025, 0.5, 0.975))
+        tmaxnvmed<-springdates[imaxInv[2]]
+        tmaxnvlb<-springdates[imaxInv[1]]
+        tmaxnvub<-springdates[imaxInv[3]]
+        pct_maxInvmed<-100*maxInvmed/N_POPULATION
+        pct_maxInvlb<-100*maxInvlb/N_POPULATION
+        pct_maxInvub<-100*maxInvub/N_POPULATION
+        pct_nvatvmaxmed<-100*as.numeric(Imat[imaxIv[2],]%>%quantile(probs = 0.5, na.rm = TRUE))/N_POPULATION
+        pct_nvatvmaxlb<-100*as.numeric(Imat[imaxIv[2],]%>%quantile(probs = 0.025, na.rm = TRUE))/N_POPULATION
+        pct_nvatvmaxub<-100*as.numeric(Imat[imaxIv[2],]%>%quantile(probs = 0.975, na.rm = TRUE))/N_POPULATION
+        
+        # Save the overall cumulative infections for the spring semester and the cumulative
+        # infections after the variant, in order by the parameter combo
+        cumIvec_nv<-cumIvec
+        cumIAVvec_nv<-cumIAVvec
+      }
+      
+    } # end j loop for variant no variant
+    
+    # Compute the summary statistics from the matched samples
+    # April 9th to May 23rd (after variant)
+    delta_inf_AV<- cumIAVvec_v - cumIAVvec_nv
+    delta_inf_AV_med<-quantile(delta_inf_AV, probs = 0.5, na.rm = TRUE)
+    delta_inf_AV_lb<-quantile(delta_inf_AV, probs = 0.025, na.rm = TRUE)
+    delta_inf_AV_ub<-quantile(delta_inf_AV, probs = 0.975, na.rm = TRUE)
+    pct_inc_AV<-100*(cumIAVvec_v - cumIAVvec_nv)/cumIAVvec_nv
+    pct_inc_AV_med<-quantile(pct_inc_AV, probs = 0.5, na.rm = TRUE)
+    pct_inc_AV_lb<-quantile(pct_inc_AV, probs = 0.025, na.rm = TRUE)
+    pct_inc_AV_ub<-quantile(pct_inc_AV, probs = 0.975, na.rm = TRUE)
+    # Overall (whole time period)
+    delta_inf<-cumIvec_v- cumIvec_nv
+    delta_inf_med<-quantile(delta_inf, probs = 0.5, na.rm = TRUE)
+    delta_inf_lb<-quantile(delta_inf, probs = 0.025, na.rm = TRUE)
+    delta_inf_ub<-quantile(delta_inf, probs = 0.975, na.rm = TRUE)
+    pct_inc<-100*(cumIvec_v - cumIvec_nv)/cumIvec_nv
+    pct_inc_med<-quantile(pct_inc, probs = 0.5, na.rm = TRUE)
+    pct_inc_lb<-quantile(pct_inc, probs = 0.025, na.rm = TRUE)
+    pct_inc_ub<-quantile(pct_inc, probs = 0.975, na.rm = TRUE)
+    
+    # Make the data long to stack all of the simulation runs
+    I_longvariant<-Iallv%>%melt(id.vars = c("tsim"), variable.name = "samples", value.name = "I_t_v")
+    I_longnv<-Iallnv%>%melt(id.vars = c("tsim"), variable.name = "samples", value.name = "I_t_nv")
+    I_variant<-I_longvariant$I_t_v
+    I_novariant<-I_longnv$I_t_nv
+    samples<-I_longvariant$samples
+    if (m==1){
+      # First make a long data frame with all of the samples stacked (nrows = n_timesteps*nsamples)
+      df_t_sim<-data.frame(t,scenario,samples, I_variant, I_novariant) # Long one with all sims
+      scenario<-scenario[1:length(tsim)]
+      ik<-t==round(t) # only keep who timesteps (days)
+      df_t_sim<-df_t_sim[ik,]
+      df_t_sim$dates<-rep(springdates, nsamps)
+      
+      # Then make the time course summary data frame (nrows = n_timesteps)
+      df_t<-data.frame(tsim, scenario, Imedianv, Ilbv, Iubv, Imediannv, B117medianv, B117lbv, B117ubv,
+                       WTmedianv, WTlbv, WTubv,Ilbnv, Iubnv, f_t_median, f_t_lb,
+                       f_t_ub) # time course and scenario
+      scenario<-scenario[1]
+      ikeep<-tsim == round(tsim) # only keep whole timesteps (days)
+      df_t<-df_t[ikeep,]
+      df_t$springdates<-springdates
+      
+      df_summary<-data.frame(scenario,delta_inf_AV_med, delta_inf_AV_lb, delta_inf_AV_ub,
+                             pct_inc_AV_med, pct_inc_AV_lb, pct_inc_AV_ub,
+                             delta_inf_med, delta_inf_lb, delta_inf_ub,
+                             pct_inc_med, pct_inc_lb, pct_inc_ub, I0med, I0lb, I0ub,
+                             cumImedianv, cumIlbv, cumIubv, maxIvmed, maxIvlb, maxIvub, tmaxvmed, 
+                             tmaxvlb, tmaxvub, Rmedianv, Rlbv, Rubv, betamedian, betalb, betaub,
+                             cumImediannv, cumIlbnv, cumIubnv,
+                             cumIAVvmedian, cumIAVvlb, cumIAVvub, cumIAVnvmedian, cumIAVnvlb, cumIAVnvub,
+                             cumIBVmedian, cumIBVlb, cumIBVub,
+                             maxInvlb, maxInvub, tmaxnvmed, tmaxnvlb, tmaxnvub, Rmediannv, Rlbnv, Rubnv, 
+                             pct_maxIvmed, pct_maxIvlb, pct_maxIvub, pct_maxInvmed, pct_maxInvlb,
+                             pct_maxInvub, pct_nvatvmaxmed, pct_nvatvmaxlb, pct_nvatvmaxub, Rtlomed, Rtlolb,
+                             Rtloub, Rthimed, Rthilb, Rthiub)
+      
+      
+      
+    }
+    else{
+      # all simulations
+      df_t_simi<-data.frame(t,scenario, samples, I_variant, I_novariant)
+      ik<-t==round(t)
+      df_t_simi<-df_t_simi[ik,]
+      df_t_simi$dates<-rep(springdates, nsamps)
+      df_t_sim<-rbind(df_t_sim, df_t_simi) # stack the dataframes
+      # just median and lb/ubs
+      scenario<-scenario[1:length(tsim)]
+      df_ti<-data.frame(tsim, scenario, Imedianv, Ilbv, Iubv, Imediannv,B117medianv, B117lbv, B117ubv,
+                        WTmedianv, WTlbv, WTubv, Ilbnv, Iubnv, f_t_median, f_t_lb,
+                        f_t_ub)
+      ikeep<-tsim == round(tsim)
+      df_ti<-df_ti[ikeep,]
+      df_ti$springdates<-springdates
+      df_t<-rbind(df_t, df_ti)
+      # summary statistics
+      scenario<-scenario[1]
+      df_summaryi<-data.frame(scenario,delta_inf_AV_med, delta_inf_AV_lb, delta_inf_AV_ub,
+                              pct_inc_AV_med, pct_inc_AV_lb, pct_inc_AV_ub,
+                              delta_inf_med, delta_inf_lb, delta_inf_ub,
+                              pct_inc_med, pct_inc_lb, pct_inc_ub,I0med, I0lb, I0ub, 
+                              cumImedianv, cumIlbv, cumIubv, maxIvmed, maxIvlb, maxIvub, tmaxvmed, 
+                              tmaxvlb, tmaxvub, Rmedianv, Rlbv, Rubv, betamedian, betalb, betaub, cumImediannv,
+                              cumIlbnv, cumIubnv,
+                              cumIAVvmedian, cumIAVvlb, cumIAVvub, cumIAVnvmedian, cumIAVnvlb, cumIAVnvub,
+                              cumIBVmedian, cumIBVlb, cumIBVub,
+                              maxInvlb, maxInvub, tmaxnvmed, tmaxnvlb, tmaxnvub, Rmediannv, Rlbnv, Rubnv, 
+                              pct_maxIvmed, pct_maxIvlb, pct_maxIvub, pct_maxInvmed, pct_maxInvlb,
+                              pct_maxInvub, pct_nvatvmaxmed, pct_nvatvmaxlb, pct_nvatvmaxub, Rtlomed, Rtlolb,
+                              Rtloub, Rthimed, Rthilb, Rthiub)
+      df_summary<-rbind(df_summary, df_summaryi)
+    }
+    
+    
+    
+  } # end m loop for scenarios
+  out_list<-list(df_t_sim, df_t, df_summary)
+  return(out_list)
 }
   

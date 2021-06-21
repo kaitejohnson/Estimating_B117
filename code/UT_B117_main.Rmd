@@ -45,7 +45,6 @@ dt<-0.1
 mean_GI<-5.8 # average generation interval (for EpiEstim)
 std_GI<-2.3 # std dev generation interval (for EpiEstim)
 N_POPULATION <-30000 # estimated "active" population at UT
-Rt_cap<-2.5 # We assume that R(t) never went above this value in the fall, but that major surges were just due to increased testing...
 prop_prev_inf_Aug = 0.05 
 nsamps<-500 # number of samples from the distributions for uncertainty
 ```
@@ -108,8 +107,6 @@ p_curr = 0.627
 tr_adv = 0.56 # This should probably be a function of b0 and b1? 
 
 
-# Generate  a single f_t (multiplicative factor on beta) using the SGTF data 
-#f_t<-get_ft(b0, b1, p_curr, tr_adv, tsim)
 ```
 Process the daily case data from UT students
 ```{r}
@@ -121,8 +118,10 @@ case_data<-read.csv(DATA_PATH_CASES)%>%mutate(date = as.Date(CollectionDate, for
 case_data<-case_data%>%mutate(positivity = student_PCT_pos/total_student_PCT_tests)
 sevendayPCTpos = c(rep(NA,3), rollapply(case_data$positivity, 7, function(x) mean(x, na.rm = TRUE)), rep(NA,3))
 sevendayPCTcases = c(rep(NA,3), rollapply(case_data$student_PCT_pos, 7, function(x) mean(x, na.rm = TRUE)), rep(NA,3))
+sevendaycases = c(rep(NA,3), rollapply(case_data$student_pos, 7, function(x) mean(x, na.rm = TRUE)), rep(NA,3))
 case_data$sevendayPCTpos = sevendayPCTpos
 case_data$sevendayPCTcases = sevendayPCTcases
+case_data$sevendaycases = sevendaycases
 
 case_data%>%ggplot() + geom_line(aes(x = date, y = sevendayPCTpos)) + geom_bar(aes(x = date, y = positivity), stat = "identity") + ylab('PCT positivity') + xlab('Test Collection Date')
 
@@ -132,7 +131,7 @@ case_data%>%ggplot() + geom_line(aes(x = date, y = sevendayPCTcases)) + geom_bar
 #daily_p_local<-get_daily_p_local(case_data, fall_arrival_date)
 case_data_fall<-case_data%>%filter(date<=fall_last_date)
 case_data_spring<-case_data%>%filter(date>=spring_arrival_date)
-cases_fall<-case_data_fall$student_pos
+cases_fall<-case_data_fall$student_pos # for fall, we use total positives
 
 avg_tests_per_day<-mean(case_data_spring$total_student_PCT_tests, na.rm = TRUE)
 case_data_spring$positivity[is.na(case_data_spring$positivity)]=case_data_spring$sevendayPCTpos[is.na(case_data_spring$positivity)]
@@ -140,8 +139,11 @@ case_data_spring$positivity[is.na(case_data_spring$positivity)]=case_data_spring
 case_data_around_freeze<-case_data%>%filter(date<=as.Date("2021-02-24"), date>=as.Date("2021-02-10"),
                                             total_student_PCT_tests>0)
 avg_positivity_freeze<-sum(case_data_around_freeze$student_PCT_pos)/sum(case_data_around_freeze$total_student_PCT_tests)
+avg_n_cases_freeze<-sum(case_data_around_freeze$student_pos)/nrow(case_data_around_freeze)
 case_data_spring$positivity[is.na(case_data_spring$positivity)]=avg_positivity_freeze
-cases_spring<-round(avg_tests_per_day*case_data_spring$positivity,0)
+cases_spring<-round(avg_tests_per_day*case_data_spring$positivity,0) # for spring, we used PCT positivity
+case_data_spring$imputed_cases<-cases_spring
+
 
 Rt_summary_fall<-Rt_fxn_cases(cases_fall, case_data_fall, fall_arrival_date, fall_last_date, mean_GI,std_GI)
 Rt_summary_spring<-Rt_fxn_cases(cases_spring, case_data_spring, spring_arrival_date, spring_last_date+7, mean_GI,std_GI)
@@ -153,12 +155,35 @@ write.csv(Rt_summary_spring, '../data/Rt_students_spring.csv', row.names = FALSE
 Rt_summary_fall%>%ggplot() + geom_line(aes(x =dates, y = Rt_medians))+ geom_ribbon(aes(x = dates, ymin = Rt_lowerbounds, ymax = Rt_upperbounds), alpha = 0.1)
 Rt_summary_spring%>%ggplot() + geom_line(aes(x =dates, y = Rt_medians))+ geom_ribbon(aes(x = dates, ymin = Rt_lowerbounds, ymax = Rt_upperbounds), alpha = 0.1)
 ```
+```{r}
+path = "../out/student_cases.png"
+geom_mean<- exp(rollapply(log(case_data_spring$imputed_cases/N_POPULATION), 7, mean,na.rm = TRUE))
+geom_mean<-c(rep(NA, 3), geom_mean, rep(NA, 3))
+case_data_spring$geom_mean<-geom_mean
+cases<-ggplot(case_data_spring) + geom_line(aes(x = date, y = sevendaycases)) + geom_bar(aes(x = date, y = student_pos), stat = "identity") + xlab('Date') + ylab('Total student cases') + scale_y_continuous(trans='log2')
+cases
+ggsave(filename = path, device = "png", dpi = 700)
+
+tspring<-seq(from = 0, to = nrow(case_data_spring)-1, by =1)
+ p_t<-(1/(1+exp(-(b0+b1*tspring))))
+plot(tspring, p_t)
+
+path = "../out/student_cases_by_B117.png"
+case_data_spring$n_est_B117<-case_data_spring$student_pos*p_t
+case_data_spring$n_est_WT<-case_data_spring$student_pos*(1-p_t)
+case_data_long<-case_data_spring%>%select(date, n_est_B117, n_est_WT)%>%
+  pivot_longer(cols = starts_with("n_est_"), names_to = "strain", names_prefix = "n_est_", values_to = "n", values_drop_na = TRUE)
+cases<-ggplot(case_data_long, aes(x = date, y = n, fill = strain)) + geom_bar(position = "stack", stat = "identity") + xlab('Date') + ylab('Total student cases') 
+cases
+ggsave(filename = path, device = "png", dpi = 700)
+
+```
 Run the SEIR model using the fall case data to estimate the number previously infected
 ```{r}
 fall_intros<-read.csv(DATA_PATH_INTROS)%>%filter(Location == "total", Time == "Fall")%>%select(ML_infections_lo, ML_infections_med, ML_infections_hi)
 I0bounds<-c(fall_intros$ML_infections_lo, fall_intros$ML_infections_hi)
 
-par_table<-data.frame(dt, delta, gamma, N_POPULATION, Rt_cap, prop_prev_inf_Aug, nsamps)
+par_table<-data.frame(dt, delta, gamma, N_POPULATION, prop_prev_inf_Aug, nsamps)
 
 cumIJan<-run_fall_SEIR(par_table, I0bounds, Rt_summary_fall)
 cumICI<-(cumIJan/N_POPULATION)%>%quantile(probs = c(0.025, 0.5, 0.975))
@@ -166,10 +191,8 @@ print(cumICI)
 ```
 Use the previous infection estimates from the fall, spring Rt, the current estimates of variant prevalence, and variant increase in transmissibility to project infections with and without the variant.
 ```{r}
-spring_intros<-read.csv(DATA_PATH_INTROS)%>%filter(Location == "total", Time == "Spring")%>%select(ML_infections_lo, ML_infections_med, ML_infections_hi)
-I0bounds<-c(fall_intros$ML_infections_lo, fall_intros$ML_infections_hi)
-# option to also include uncertainty in b0, b1 and tr_adv, but leave as is for now
-spring_par_table<-data.frame(dt, delta, gamma, N_POPULATION, Rt_cap, nsamps, b0, b1, tr_adv)
+
+spring_par_table<-data.frame(dt, delta, gamma, N_POPULATION, nsamps, b0, b1, tr_adv)
 p_curr_distrib<-runif(nsamps, 0.501, 0.739) # This should be from Woody's output, this is a placeholder
 iRts<-c(18, 14) # indices in spring Rt that correspond to the faster and slower spread scenarios
 
@@ -207,6 +230,37 @@ plot1<-ggplot() + geom_line(data = df_t_sim, aes(x = dates, y = 1000*I_variant/N
   xlab ("Date") + ylab('COVID-19 infections per 1000')+theme(strip.background = element_blank(), aspect.ratio = 0.8) + coord_cartesian(ylim = c(0, 50))
 plot1
 ggsave(filename = path, device = "png", dpi = 700)
+
+
+# all 4 scenarios median model lines
+path = "../out/all4medians.png"
+plot4<-ggplot() + geom_line(data = df_t, aes(x = springdates, y = 1000*Imediannv/N, group = scenario, linetype = scenario),color = "tan1", size = 1) + 
+  geom_line(data = df_t, aes(x = springdates, y = 1000*Imedianv/N, group = scenario, linetype = scenario), color = "mediumpurple", size = 1) +
+  xlab ("Date") + ylab('COVID-19 infections per 1000')+theme(aspect.ratio = 0.8) + coord_cartesian(ylim = c(0, 50))+ ggtitle("Median model lines by scenario")
+plot4
+ggsave(filename = path, device = "png", dpi = 700)
+```
+```{r}
+# imputed infections B117 and WT
+plot_both<-ggplot() + geom_line(data = df_t, aes(x=springdates, y = B117medianv), color = "red") + 
+  geom_ribbon(data = df_t, aes(x = springdates, ymin = B117lbv, ymax = B117ubv), alpha = 0.1, fill = "red") +
+  geom_line(data = df_t, aes(x=springdates, y = WTmedianv), color = "blue")+
+  geom_ribbon(data = df_t, aes(x = springdates, ymin = WTlbv, ymax = WTubv), alpha = 0.1, fill = "blue")+
+  geom_line(data = df_t, aes(x=springdates, y = Imedianv), color = "black")+
+  geom_ribbon(data = df_t, aes(x = springdates, ymin = Ilbv, ymax = Iubv), alpha = 0.1, fill = "black")+
+  facet_wrap(~scenario) + xlab ("Date") + ylab('COVID-19 infections')
+plot_both
+
+plot_bothlog<-ggplot() + geom_line(data = df_t, aes(x=springdates, y = B117medianv), color = "red") + 
+  geom_ribbon(data = df_t, aes(x = springdates, ymin = B117lbv, ymax = B117ubv), alpha = 0.1, fill = "red") +
+  geom_line(data = df_t, aes(x=springdates, y = WTmedianv), color = "blue")+
+  geom_ribbon(data = df_t, aes(x = springdates, ymin = WTlbv, ymax = WTubv), alpha = 0.1, fill = "blue")+
+  geom_line(data = df_t, aes(x=springdates, y = Imedianv), color = "black")+
+  geom_ribbon(data = df_t, aes(x = springdates, ymin = Ilbv, ymax = Iubv), alpha = 0.1, fill = "black")+
+  facet_wrap(~scenario) + xlab ("Date") + ylab('COVID-19 infections') + scale_y_log10()
+plot_bothlog
+```
+
 
 # Only faster spread scenario
 df_fast<-df_t_sim%>%filter(scenario=="Faster spread")
