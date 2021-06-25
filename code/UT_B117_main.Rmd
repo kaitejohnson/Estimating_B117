@@ -16,6 +16,7 @@ library(knitr)
 library(flexmix)
 library(zoo)
 library(DescTools)
+library(dplyr)
 source("UT_B117_functions.R")
 theme_set(theme_cowplot())
 ggplot + background_grid(major = "xy", minor = "xy")
@@ -100,11 +101,14 @@ ggsave(filename = path, device = "png", dpi = 700)
 
 # Use SGTF data set to call function to fit the logistic model with uncertainty from SGTF presence. 
 
-#output: b0 and b1 in logistic growth model, current B117 prevalence
-b0 = -2.861
-b1 = 0.040
+#output: c and k in logistic growth model (intercept and growth rate), current B117 prevalence
+c = -2.861
+c_distrib<-runif(n= nsamps, min = -2.9, max = -2.83)
+k = 0.040
+k_distrib = runif(n=nsamps, min = 0.037, max = 0.043)
 p_curr = 0.627
-tr_adv = 0.56 # This should probably be a function of b0 and b1? 
+p_curr_distrib<-runif(nsamps, 0.501, 0.739)
+M_distrib = exp(mean_GI*k_distrib) # This should probably be a function of b0 and b1? 
 
 
 ```
@@ -165,7 +169,7 @@ cases
 ggsave(filename = path, device = "png", dpi = 700)
 
 tspring<-seq(from = 0, to = nrow(case_data_spring)-1, by =1)
- p_t<-(1/(1+exp(-(b0+b1*tspring))))
+ p_t<-(1/(1+exp(-(c+k*tspring))))
 plot(tspring, p_t)
 
 path = "../out/student_cases_by_B117.png"
@@ -192,11 +196,11 @@ print(cumICI)
 Use the previous infection estimates from the fall, spring Rt, the current estimates of variant prevalence, and variant increase in transmissibility to project infections with and without the variant.
 ```{r}
 
-spring_par_table<-data.frame(dt, delta, gamma, N_POPULATION, nsamps, b0, b1, tr_adv)
+spring_par_table<-data.frame(dt, delta, gamma, N_POPULATION, nsamps)
 p_curr_distrib<-runif(nsamps, 0.501, 0.739) # This should be from Woody's output, this is a placeholder
 iRts<-c(18, 14) # indices in spring Rt that correspond to the faster and slower spread scenarios
 
-out_list<-run_spring_SEIR(spring_par_table, case_data_spring, Rt_summary_spring, iRts, spring_last_date, cumIJan, p_curr_distrib)
+out_list<-run_spring_SEIR(spring_par_table, case_data_spring, Rt_summary_spring, iRts, spring_last_date, cumIJan, k_distrib,c_distrib, p_curr_distrib)
 
 df_t_sim<-out_list[[1]] # contains the time course of runs for 500 simulations for both scenarios
 df_t<-out_list[[2]] # contains the median and bounds of the time course runs for both scenarios
@@ -239,9 +243,10 @@ plot4<-ggplot() + geom_line(data = df_t, aes(x = springdates, y = 1000*Imediannv
   xlab ("Date") + ylab('COVID-19 infections per 1000')+theme(aspect.ratio = 0.8) + coord_cartesian(ylim = c(0, 50))+ ggtitle("Median model lines by scenario")
 plot4
 ggsave(filename = path, device = "png", dpi = 700)
-```
-```{r}
+
+
 # imputed infections B117 and WT
+path = "../out/both_inf_t.png"
 plot_both<-ggplot() + geom_line(data = df_t, aes(x=springdates, y = B117medianv), color = "red") + 
   geom_ribbon(data = df_t, aes(x = springdates, ymin = B117lbv, ymax = B117ubv), alpha = 0.1, fill = "red") +
   geom_line(data = df_t, aes(x=springdates, y = WTmedianv), color = "blue")+
@@ -250,7 +255,9 @@ plot_both<-ggplot() + geom_line(data = df_t, aes(x=springdates, y = B117medianv)
   geom_ribbon(data = df_t, aes(x = springdates, ymin = Ilbv, ymax = Iubv), alpha = 0.1, fill = "black")+
   facet_wrap(~scenario) + xlab ("Date") + ylab('COVID-19 infections')
 plot_both
+ggsave(filename = path, device = "png", dpi = 700)
 
+path = "../out/both_inf_log.png"
 plot_bothlog<-ggplot() + geom_line(data = df_t, aes(x=springdates, y = B117medianv), color = "red") + 
   geom_ribbon(data = df_t, aes(x = springdates, ymin = B117lbv, ymax = B117ubv), alpha = 0.1, fill = "red") +
   geom_line(data = df_t, aes(x=springdates, y = WTmedianv), color = "blue")+
@@ -259,6 +266,7 @@ plot_bothlog<-ggplot() + geom_line(data = df_t, aes(x=springdates, y = B117media
   geom_ribbon(data = df_t, aes(x = springdates, ymin = Ilbv, ymax = Iubv), alpha = 0.1, fill = "black")+
   facet_wrap(~scenario) + xlab ("Date") + ylab('COVID-19 infections') + scale_y_log10()
 plot_bothlog
+ggsave(filename = path, device = "png", dpi = 700)
 ```
 
 

@@ -271,7 +271,7 @@ run_fall_SEIR<-function(par_table, I0bounds, Rt_fall){
   
 }
 
-run_spring_SEIR<-function(par_table, case_data_spring, Rt_spring, iRts, spring_last_date, R0s, p_curr_distrib){
+run_spring_SEIR<-function(par_table, case_data_spring, Rt_spring, iRts, spring_last_date, R0s,k_distrib, c_distrib, p_curr_distrib){
 
 
   var_names<-colnames(par_table)
@@ -307,12 +307,13 @@ run_spring_SEIR<-function(par_table, case_data_spring, Rt_spring, iRts, spring_l
   init_prev<-rbeta(n=nsamps, shape1 = 1+n_pos_first_week, shape2 = 1+n_tests_first_week-n_pos_first_week)
   for( i in 1:nsamps){
     p_curr<-p_curr_distrib[i] 
-    #b0<-b0_distrib[i]
-    #b1<-b1_distrib[i]
-    #tr_adv<-tr_adv_distrib[i]
+    k<-k_distrib[i]
+    c<-c_distrib[i]
+    tr_adv<-exp(mean_GI*k) -1 # M-1
+    #tr_adv<-tr_adv_distrib[i] function of  exp(b1*g_time)
     # f_t must correspond to the correct b0, b1, pcurr, and tr_adv parameters
-    f_ts[,i]<-get_ft(b0, b1, p_curr, tr_adv, tsim)
-    p_ts[,i] = (1/(1+exp(-(b0+b1*tsim))))
+    f_ts[,i]<-get_ft(c, k, p_curr, tr_adv, tsim)
+    p_ts[,i] = (1/(1+exp(-(c+k*tsim))))
   }
 
   
