@@ -10,6 +10,7 @@ library(ggplot2)
 library(dplyr)
 library(EpiEstim)
 library(tidyr)
+library(EnvStats)
 library(reshape2)
 library(cowplot)
 library(knitr)
@@ -102,17 +103,46 @@ ggsave(filename = path, device = "png", dpi = 700)
 # Use SGTF data set to call function to fit the logistic model with uncertainty from SGTF presence. 
 
 #output: c and k in logistic growth model (intercept and growth rate), current B117 prevalence
-c = -2.861
-c_distrib<-runif(n= nsamps, min = -2.9, max = -2.83)
-k = 0.040
-k_distrib = runif(n=nsamps, min = 0.037, max = 0.043)
+# Early estimate: Jan 16- Feb. 12
+c1 = -2.861
+c1_distrib<-runif(n= nsamps, min = -2.9, max = -2.83)
+k1 = 0.077
+k1_distrib<-runif(n= nsamps, min = 0.017, max = 0.140)
+
+# Full estimate: Jan 16- April 9
+c2 = c1
+c2_distrib<-runif(n= nsamps, min = -2.9, max = -2.83)
+k2 = 0.040
+k2_distrib = runif(n=nsamps, min = 0.037, max = 0.043)
 p_curr = 0.627
 p_curr_distrib<-runif(nsamps, 0.501, 0.739)
-M_distrib = exp(mean_GI*k_distrib) # This should probably be a function of b0 and b1? 
+
+write.csv(c1_distrib, '../data/c1_distrib.csv', row.names = FALSE)
+write.csv(k1_distrib,'../data/k1_distrib.csv', row.names = FALSE)
+write.csv(c2_distrib, '../data/c2_distrib.csv', row.names = FALSE)
+write.csv(k2_distrib,'../data/k2_distrib.csv', row.names = FALSE)
+write.csv(p_curr_distrib, '../data/p_curr_distrib.csv', row.names = FALSE)
+
+M1_distrib = exp(mean_GI*k1_distrib)
+M2_distrib = exp(mean_GI*k2_distrib) # This should probably be a function of b0 and b1? 
 
 
 ```
-Process the daily case data from UT students
+Load in the logistic growth model outputs (posterior distributions of the y-intercept and growth rate, and the current estimate of the B117 prevalence)** These will be used as inputs into the SEIR model**
+```{r}
+k1_distrib<-read.csv('../data/k1_distrib.csv')
+k1_distrib<-k1_distrib$x
+c1_distrib<-read.csv('../data/c1_distrib.csv')
+c1_distrib<-c1_distrib$x
+k2_distrib<-read.csv('../data/k2_distrib.csv')
+k2_distrib<-k2_distrib$x
+c2_distrib<-read.csv('../data/c2_distrib.csv')
+c2_distrib<-c2_distrib$x
+p_curr_distrib<-read.csv('../data/p_curr_distrib.csv')
+p_curr_distrib<-p_curr_distrib$x
+```
+
+Load in the UT case data, clean and estimate Rt
 ```{r}
 case_data<-read.csv(DATA_PATH_CASES)%>%mutate(date = as.Date(CollectionDate, format = "%Y-%m-%d"))%>%
                                                 select(date, student_pos, student_PCT_pos,
@@ -156,28 +186,36 @@ Rt_summary_spring<-Rt_fxn_cases(cases_spring, case_data_spring, spring_arrival_d
 write.csv(Rt_summary_fall, '../data/Rt_students_fall.csv', row.names = FALSE)
 write.csv(Rt_summary_spring, '../data/Rt_students_spring.csv', row.names = FALSE)
 
-Rt_summary_fall%>%ggplot() + geom_line(aes(x =dates, y = Rt_medians))+ geom_ribbon(aes(x = dates, ymin = Rt_lowerbounds, ymax = Rt_upperbounds), alpha = 0.1)
-Rt_summary_spring%>%ggplot() + geom_line(aes(x =dates, y = Rt_medians))+ geom_ribbon(aes(x = dates, ymin = Rt_lowerbounds, ymax = Rt_upperbounds), alpha = 0.1)
 ```
+Load in Rt estimates from fall and spring to generate figures 
 ```{r}
+Rt_summary_fall<-read.csv('../data/Rt_students_fall.csv')
+Rt_summary_spring<-read.csv('../data/Rt_students_spring.csv')
+Rt_summary_fall$dates<-as.Date(Rt_summary_fall$dates)
+Rt_summary_spring$dates<-as.Date(Rt_summary_spring$dates)
+
+Rt_summary_fall%>%ggplot() + geom_line(aes(x =dates, y = Rt_medians))+ geom_ribbon(aes(x = dates, ymin = Rt_lowerbounds, ymax = Rt_upperbounds), alpha = 0.1)
+
+Rt_summary_spring%>%ggplot() + geom_line(aes(x =dates, y = Rt_medians))+ geom_ribbon(aes(x = dates, ymin = Rt_lowerbounds, ymax = Rt_upperbounds), alpha = 0.1)
+
+
 path = "../out/student_cases.png"
-geom_mean<- exp(rollapply(log(case_data_spring$imputed_cases/N_POPULATION), 7, mean,na.rm = TRUE))
-geom_mean<-c(rep(NA, 3), geom_mean, rep(NA, 3))
-case_data_spring$geom_mean<-geom_mean
-cases<-ggplot(case_data_spring) + geom_line(aes(x = date, y = sevendaycases)) + geom_bar(aes(x = date, y = student_pos), stat = "identity") + xlab('Date') + ylab('Total student cases') + scale_y_continuous(trans='log2')
+cases<-ggplot(case_data_spring) + geom_line(aes(x = date, y = sevendayPCTcases)) + geom_bar(aes(x = date, y = student_PCT_pos), stat = "identity") + xlab('Date') + ylab('Reported PCT cases') 
 cases
 ggsave(filename = path, device = "png", dpi = 700)
 
 tspring<-seq(from = 0, to = nrow(case_data_spring)-1, by =1)
- p_t<-(1/(1+exp(-(c+k*tspring))))
+ p_t<-(1/(1+exp(-(c2+k2*tspring))))
 plot(tspring, p_t)
 
-path = "../out/student_cases_by_B117.png"
-case_data_spring$n_est_B117<-case_data_spring$student_pos*p_t
-case_data_spring$n_est_WT<-case_data_spring$student_pos*(1-p_t)
+
+case_data_spring$n_est_B117<-case_data_spring$student_PCT_pos*p_t
+case_data_spring$n_est_WT<-case_data_spring$student_PCT_pos*(1-p_t)
 case_data_long<-case_data_spring%>%select(date, n_est_B117, n_est_WT)%>%
   pivot_longer(cols = starts_with("n_est_"), names_to = "strain", names_prefix = "n_est_", values_to = "n", values_drop_na = TRUE)
-cases<-ggplot(case_data_long, aes(x = date, y = n, fill = strain)) + geom_bar(position = "stack", stat = "identity") + xlab('Date') + ylab('Total student cases') 
+
+path = "../out/student_cases_by_B117.png"
+cases<-ggplot(case_data_long, aes(x = date, y = n, fill = strain)) + geom_bar(position = "stack", stat = "identity") + xlab('Date') + ylab('Reported PCT cases') +scale_fill_brewer(palette = "Set2")
 cases
 ggsave(filename = path, device = "png", dpi = 700)
 
@@ -193,18 +231,27 @@ cumIJan<-run_fall_SEIR(par_table, I0bounds, Rt_summary_fall)
 cumICI<-(cumIJan/N_POPULATION)%>%quantile(probs = c(0.025, 0.5, 0.975))
 print(cumICI)
 ```
-Use the previous infection estimates from the fall, spring Rt, the current estimates of variant prevalence, and variant increase in transmissibility to project infections with and without the variant.
+Use the previous infection estimates from the fall, spring Rt, the current estimates of variant prevalence, and variant increase in transmissibility (from both model estimates) to project infections with and without the variant.
 ```{r}
 
 spring_par_table<-data.frame(dt, delta, gamma, N_POPULATION, nsamps)
 p_curr_distrib<-runif(nsamps, 0.501, 0.739) # This should be from Woody's output, this is a placeholder
 iRts<-c(18, 14) # indices in spring Rt that correspond to the faster and slower spread scenarios
 
-out_list<-run_spring_SEIR(spring_par_table, case_data_spring, Rt_summary_spring, iRts, spring_last_date, cumIJan, k_distrib,c_distrib, p_curr_distrib)
+out_list<-run_spring_SEIR(spring_par_table, case_data_spring, Rt_summary_spring, iRts, spring_last_date, cumIJan, k2_distrib, c2_distrib, p_curr_distrib)
 
 df_t_sim<-out_list[[1]] # contains the time course of runs for 500 simulations for both scenarios
 df_t<-out_list[[2]] # contains the median and bounds of the time course runs for both scenarios
 df_summary<-out_list[[3]] # contains all the summary statistics for static variables
+
+kl_distrib<-rtri(n = nsamps, min = log(1.56)/5.5, max = log(1.63)/5.5, mode = log(1.59)/5.5)
+out_list<-run_spring_SEIR(spring_par_table, case_data_spring, Rt_summary_spring, iRts, spring_last_date, cumIJan, kl_distrib, c2_distrib, p_curr_distrib)
+
+df_t_sim2<-out_list[[1]] # contains the time course of runs for 500 simulations for both scenarios
+df_t2<-out_list[[2]] # contains the median and bounds of the time course runs for both scenarios
+df_summary<-out_list[[3]] # contains all the summary statistics for static variables
+df_t_sim['I_variant_lit']<-df_t_sim2$I_variant
+df_t['Imedian_lit']<-df_t2$Imedianv
 
 ```
 Make some plots of the infection projection outputs
@@ -227,9 +274,9 @@ ggsave(filename = path, device = "png", dpi = 700)
 # Infection estimates alongside observed test positivity
 case_data_spring<-case_data_spring%>%filter(date<=spring_last_date)
 path = "../out/both_scenarios.png"
-plot1<-ggplot() + geom_line(data = df_t_sim, aes(x = dates, y = 1000*I_variant/N, group = samples), alpha = 0.05, color = "tan1") +
+plot1<-ggplot() + geom_line(data = df_t_sim, aes(x = dates, y = 1000*I_variant/N, group = samples), alpha = 0.05, color = "tan1") + geom_line(data = df_t_sim, aes(x = dates, y = 1000*I_variant_lit/N, group = samples), alpha = 0.05, color = "cyan4")+
   geom_line(data = df_t_sim, aes(x = dates, y = 1000*I_novariant/N, group = samples), alpha = 0.02, color = "mediumpurple") +
-  geom_line(data = df_t, aes(x = springdates, y = 1000*Imediannv/N), size = 1, color = "mediumpurple")+ geom_line(data = df_t, aes(x = springdates, y = 1000*Imedianv/N), size = 1, color = "tan1") +
+  geom_line(data = df_t, aes(x = springdates, y = 1000*Imediannv/N), size = 1, color = "mediumpurple")+ geom_line(data = df_t, aes(x = springdates, y = 1000*Imedianv/N), size = 1, color = "tan1") +geom_line(data = df_t, aes(x = springdates, y = 1000*Imedian_lit/N), size = 1, color = "cyan4")+
   geom_point(data = case_data_spring, aes(x = date, y = 1000*sevendayPCTpos), size = 0.5) +facet_wrap(~scenario) + 
   xlab ("Date") + ylab('COVID-19 infections per 1000')+theme(strip.background = element_blank(), aspect.ratio = 0.8) + coord_cartesian(ylim = c(0, 50))
 plot1
@@ -238,8 +285,8 @@ ggsave(filename = path, device = "png", dpi = 700)
 
 # all 4 scenarios median model lines
 path = "../out/all4medians.png"
-plot4<-ggplot() + geom_line(data = df_t, aes(x = springdates, y = 1000*Imediannv/N, group = scenario, linetype = scenario),color = "tan1", size = 1) + 
-  geom_line(data = df_t, aes(x = springdates, y = 1000*Imedianv/N, group = scenario, linetype = scenario), color = "mediumpurple", size = 1) +
+plot4<-ggplot() + geom_line(data = df_t, aes(x = springdates, y = 1000*Imediannv/N, group = scenario, linetype = scenario),color = "mediumpurple", size = 1) + 
+  geom_line(data = df_t, aes(x = springdates, y = 1000*Imedianv/N, group = scenario, linetype = scenario), color = "tan1", size = 1) +geom_line(data = df_t, aes(x = springdates, y = 1000*Imedian_lit/N, group = scenario, linetype = scenario), color = "cyan4", size = 1)+
   xlab ("Date") + ylab('COVID-19 infections per 1000')+theme(aspect.ratio = 0.8) + coord_cartesian(ylim = c(0, 50))+ ggtitle("Median model lines by scenario")
 plot4
 ggsave(filename = path, device = "png", dpi = 700)

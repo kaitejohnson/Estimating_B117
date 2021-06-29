@@ -271,8 +271,8 @@ run_fall_SEIR<-function(par_table, I0bounds, Rt_fall){
   
 }
 
-run_spring_SEIR<-function(par_table, case_data_spring, Rt_spring, iRts, spring_last_date, R0s,k_distrib, c_distrib, p_curr_distrib){
-
+run_spring_SEIR<-function(par_table, case_data_spring, Rt_spring, iRts, spring_last_date, R0s,k_distrib, c_distrib,
+                           p_curr_distrib){
 
   var_names<-colnames(par_table)
   for (i in 1:length(var_names)){
@@ -310,12 +310,14 @@ run_spring_SEIR<-function(par_table, case_data_spring, Rt_spring, iRts, spring_l
     k<-k_distrib[i]
     c<-c_distrib[i]
     tr_adv<-exp(mean_GI*k) -1 # M-1
+    
     #tr_adv<-tr_adv_distrib[i] function of  exp(b1*g_time)
     # f_t must correspond to the correct b0, b1, pcurr, and tr_adv parameters
     f_ts[,i]<-get_ft(c, k, p_curr, tr_adv, tsim)
     p_ts[,i] = (1/(1+exp(-(c+k*tsim))))
+    
   }
-
+  
   
   f_t_median<-apply( f_ts , 1 , quantile , probs = 0.5 , na.rm = TRUE )
   f_t_lb<-apply( f_ts , 1 , quantile , probs = 0.025 , na.rm = TRUE )
@@ -346,6 +348,7 @@ run_spring_SEIR<-function(par_table, case_data_spring, Rt_spring, iRts, spring_l
   Rthilb<-RthiCI[2]
   Rthimed<-RthiCI[1]
   Rthiub<-RthiCI[3]
+
   
   for (m in 1:length(scenarios)){
     # Set scenario
@@ -353,7 +356,7 @@ run_spring_SEIR<-function(par_table, case_data_spring, Rt_spring, iRts, spring_l
     dates<-rep(springdates, nsamps)
     t<-rep(tsim, nsamps)
     scenario<-rep(scenarios[m], nsamps*length(tsim))
-    for (j in 1:2){ # Run twice through, once for with variant and once for without variant
+    for (j in 1:2){ # Run two times through for variant and no variant scenarions
       Imat<-matrix(nrow = length(tsim), ncol = nsamps)
       B117mat<-matrix(nrow = length(tsim), ncol = nsamps)
       cumIvec<-matrix(nrow = 1, ncol = nsamps) # total number infected in this time period
@@ -406,9 +409,11 @@ run_spring_SEIR<-function(par_table, case_data_spring, Rt_spring, iRts, spring_l
           }
           # After tobs, introduce variant
           else if (i>length(tobs)) {
-            if (j==2){ # if j==2, no variant case.
+            
+            if(j==2){
               variant_factor<- rep(1, length(tsim)) 
             }
+            
             Rt_i<-Rt[iRt]
             # Hold beta constant except for the variant factor 
             beta_t[i]<-(Rt_i*delta*N_POPULATION/S[(length(tobs))])*variant_factor[i]
@@ -446,7 +451,7 @@ run_spring_SEIR<-function(par_table, case_data_spring, Rt_spring, iRts, spring_l
       } # end k loop for nsamps simulations
       
       # Assign Iall data frame to either be no variant or variant
-      if (j==1){ # variant present
+      if (j==1){ # updated variant present
         Iallv<-Ialls
         # Get median and lower and upper bounds over time
         Imedianv<-apply( Imat , 1 , quantile , probs = 0.5 , na.rm = TRUE )
@@ -462,32 +467,14 @@ run_spring_SEIR<-function(par_table, case_data_spring, Rt_spring, iRts, spring_l
         cumIBVmedian<-as.numeric(quantile(cumIBVvec/N_POPULATION, probs = 0.5, na.rm = TRUE))
         cumIBVlb<-as.numeric(quantile(cumIBVvec/N_POPULATION, probs = 0.025, na.rm = TRUE))
         cumIBVub<-as.numeric(quantile(cumIBVvec/N_POPULATION, probs = 0.975, na.rm = TRUE))
-        # Get the median and bounds of total immune at end
-        Rmedianv<-as.numeric(quantile(Rvec, probs = 0.5, na.rm = TRUE))
-        Rlbv<-as.numeric(quantile(Rvec, probs = 0.025, na.rm = TRUE))
-        Rubv<-as.numeric(quantile(Rvec, probs = 0.975, na.rm = TRUE))
-        # Get the betaCI
-        betamedian<-as.numeric(quantile(betavec, probs = 0.5, na.rm = TRUE))
-        betalb<-as.numeric(quantile(betavec, probs = 0.025, na.rm = TRUE))
-        betaub<-as.numeric(quantile(betavec, probs = 0.975, na.rm = TRUE))
-        # Find the maximum number infected in each time series (along each column)
-        maxIvmed<-as.numeric(apply(Imat, 2, max)%>%quantile(probs =0.5))
-        maxIvlb<-as.numeric(apply(Imat, 2, max)%>%quantile(probs =0.025))
-        maxIvub<-as.numeric(apply(Imat, 2, max)%>%quantile(probs = 0.975))
-        imaxIv<-as.numeric(apply(Imat, 2, which.max)%>%quantile(probs =c(0.025, 0.5, 0.975)))
-        tmaxvmed<-springdates[imaxIv[2]]
-        tmaxvlb<-springdates[imaxIv[1]]
-        tmaxvub<-springdates[imaxIv[3]]
-        pct_maxIvmed<-100*maxIvmed/N_POPULATION
-        pct_maxIvlb<-100*maxIvlb/N_POPULATION
-        pct_maxIvub<-100*maxIvub/N_POPULATION
-        
         # Save the overall cumulative infections for the spring semester and the cumulative infections
         #after the variant, in order by the parameter combo
         cumIvec_v<-cumIvec
         cumIAVvec_v<-cumIAVvec
         
       }
+      
+      
       if (j==2){ # no variant
         Iallnv<-Ialls # assign I all to no variant
         # Get median and lower and upper bounds over time
@@ -508,27 +495,6 @@ run_spring_SEIR<-function(par_table, case_data_spring, Rt_spring, iRts, spring_l
         cumIAVnvmedian<-as.numeric(quantile(cumIAVvec, probs = 0.5, na.rm = TRUE))
         cumIAVnvlb<-as.numeric(quantile(cumIAVvec, probs = 0.025, na.rm = TRUE))
         cumIAVnvub<-as.numeric(quantile(cumIAVvec, probs = 0.975, na.rm = TRUE))
-        Rmediannv<-as.numeric(quantile(Rvec, probs = 0.5, na.rm = TRUE))
-        Rlbnv<-as.numeric(quantile(Rvec, probs = 0.025, na.rm = TRUE))
-        Rubnv<-as.numeric(quantile(Rvec, probs = 0.975, na.rm = TRUE))
-        # Get the beta CI
-        betamedian<-as.numeric(quantile(betavec, probs = 0.5, na.rm = TRUE))
-        betalb<-as.numeric(quantile(betavec, probs = 0.025, na.rm = TRUE))
-        betaub<-as.numeric(quantile(betavec, probs = 0.975, na.rm = TRUE))
-        # Find the maximum number infected in each time series (along each column)
-        maxInvmed<-as.numeric(apply(Imat, 2, max)%>%quantile(probs =0.5))
-        maxInvlb<-as.numeric(apply(Imat, 2, max)%>%quantile(probs =0.025))
-        maxInvub<-as.numeric(apply(Imat, 2, max)%>%quantile(probs = 0.975))
-        imaxInv<-apply(Imat, 2, which.max)%>%quantile(probs =c(0.025, 0.5, 0.975))
-        tmaxnvmed<-springdates[imaxInv[2]]
-        tmaxnvlb<-springdates[imaxInv[1]]
-        tmaxnvub<-springdates[imaxInv[3]]
-        pct_maxInvmed<-100*maxInvmed/N_POPULATION
-        pct_maxInvlb<-100*maxInvlb/N_POPULATION
-        pct_maxInvub<-100*maxInvub/N_POPULATION
-        pct_nvatvmaxmed<-100*as.numeric(Imat[imaxIv[2],]%>%quantile(probs = 0.5, na.rm = TRUE))/N_POPULATION
-        pct_nvatvmaxlb<-100*as.numeric(Imat[imaxIv[2],]%>%quantile(probs = 0.025, na.rm = TRUE))/N_POPULATION
-        pct_nvatvmaxub<-100*as.numeric(Imat[imaxIv[2],]%>%quantile(probs = 0.975, na.rm = TRUE))/N_POPULATION
         
         # Save the overall cumulative infections for the spring semester and the cumulative
         # infections after the variant, in order by the parameter combo
@@ -566,14 +532,15 @@ run_spring_SEIR<-function(par_table, case_data_spring, Rt_spring, iRts, spring_l
     samples<-I_longvariant$samples
     if (m==1){
       # First make a long data frame with all of the samples stacked (nrows = n_timesteps*nsamples)
-      df_t_sim<-data.frame(t,scenario,samples, I_variant, I_novariant) # Long one with all sims
+      df_t_sim<-data.frame(t, scenario, samples, I_variant,  I_novariant) # Long one with all sims
       scenario<-scenario[1:length(tsim)]
       ik<-t==round(t) # only keep who timesteps (days)
       df_t_sim<-df_t_sim[ik,]
       df_t_sim$dates<-rep(springdates, nsamps)
       
       # Then make the time course summary data frame (nrows = n_timesteps)
-      df_t<-data.frame(tsim, scenario, Imedianv, Ilbv, Iubv, Imediannv, B117medianv, B117lbv, B117ubv,
+      df_t<-data.frame(tsim, scenario, Imedianv, Ilbv, Iubv, 
+                       Imediannv, B117medianv, B117lbv, B117ubv,
                        WTmedianv, WTlbv, WTubv,Ilbnv, Iubnv, f_t_median, f_t_lb,
                        f_t_ub) # time course and scenario
       scenario<-scenario[1]
@@ -585,15 +552,10 @@ run_spring_SEIR<-function(par_table, case_data_spring, Rt_spring, iRts, spring_l
                              pct_inc_AV_med, pct_inc_AV_lb, pct_inc_AV_ub,
                              delta_inf_med, delta_inf_lb, delta_inf_ub,
                              pct_inc_med, pct_inc_lb, pct_inc_ub, I0med, I0lb, I0ub,
-                             cumImedianv, cumIlbv, cumIubv, maxIvmed, maxIvlb, maxIvub, tmaxvmed, 
-                             tmaxvlb, tmaxvub, Rmedianv, Rlbv, Rubv, betamedian, betalb, betaub,
+                             cumImedianv, cumIlbv, cumIubv,
                              cumImediannv, cumIlbnv, cumIubnv,
                              cumIAVvmedian, cumIAVvlb, cumIAVvub, cumIAVnvmedian, cumIAVnvlb, cumIAVnvub,
-                             cumIBVmedian, cumIBVlb, cumIBVub,
-                             maxInvlb, maxInvub, tmaxnvmed, tmaxnvlb, tmaxnvub, Rmediannv, Rlbnv, Rubnv, 
-                             pct_maxIvmed, pct_maxIvlb, pct_maxIvub, pct_maxInvmed, pct_maxInvlb,
-                             pct_maxInvub, pct_nvatvmaxmed, pct_nvatvmaxlb, pct_nvatvmaxub, Rtlomed, Rtlolb,
-                             Rtloub, Rthimed, Rthilb, Rthiub)
+                             cumIBVmedian, cumIBVlb, cumIBVub)
       
       
       
@@ -607,7 +569,8 @@ run_spring_SEIR<-function(par_table, case_data_spring, Rt_spring, iRts, spring_l
       df_t_sim<-rbind(df_t_sim, df_t_simi) # stack the dataframes
       # just median and lb/ubs
       scenario<-scenario[1:length(tsim)]
-      df_ti<-data.frame(tsim, scenario, Imedianv, Ilbv, Iubv, Imediannv,B117medianv, B117lbv, B117ubv,
+      df_ti<-data.frame(tsim, scenario, Imedianv, Ilbv, Iubv,
+                        Imediannv,B117medianv, B117lbv, B117ubv,
                         WTmedianv, WTlbv, WTubv, Ilbnv, Iubnv, f_t_median, f_t_lb,
                         f_t_ub)
       ikeep<-tsim == round(tsim)
@@ -619,16 +582,11 @@ run_spring_SEIR<-function(par_table, case_data_spring, Rt_spring, iRts, spring_l
       df_summaryi<-data.frame(scenario,delta_inf_AV_med, delta_inf_AV_lb, delta_inf_AV_ub,
                               pct_inc_AV_med, pct_inc_AV_lb, pct_inc_AV_ub,
                               delta_inf_med, delta_inf_lb, delta_inf_ub,
-                              pct_inc_med, pct_inc_lb, pct_inc_ub,I0med, I0lb, I0ub, 
-                              cumImedianv, cumIlbv, cumIubv, maxIvmed, maxIvlb, maxIvub, tmaxvmed, 
-                              tmaxvlb, tmaxvub, Rmedianv, Rlbv, Rubv, betamedian, betalb, betaub, cumImediannv,
-                              cumIlbnv, cumIubnv,
+                              pct_inc_med, pct_inc_lb, pct_inc_ub, I0med, I0lb, I0ub,
+                              cumImedianv, cumIlbv, cumIubv,
+                              cumImediannv, cumIlbnv, cumIubnv,
                               cumIAVvmedian, cumIAVvlb, cumIAVvub, cumIAVnvmedian, cumIAVnvlb, cumIAVnvub,
-                              cumIBVmedian, cumIBVlb, cumIBVub,
-                              maxInvlb, maxInvub, tmaxnvmed, tmaxnvlb, tmaxnvub, Rmediannv, Rlbnv, Rubnv, 
-                              pct_maxIvmed, pct_maxIvlb, pct_maxIvub, pct_maxInvmed, pct_maxInvlb,
-                              pct_maxInvub, pct_nvatvmaxmed, pct_nvatvmaxlb, pct_nvatvmaxub, Rtlomed, Rtlolb,
-                              Rtloub, Rthimed, Rthilb, Rthiub)
+                              cumIBVmedian, cumIBVlb, cumIBVub)
       df_summary<-rbind(df_summary, df_summaryi)
     }
     
