@@ -155,11 +155,11 @@ Rt_fxn_cases <- function(cases, case_data, arrival, last_reliable_day, MEAN_GI,S
   return(Rt_summary)
 }
 
-get_ft<-function(b0, b1, p_curr, tr_adv, tsim){
-  p_t<-(1/(1+exp(-(b0+b1*tsim))))
-  f_t<-(1+tr_adv*p_t)/(1+(tr_adv*p_curr))
-  return(f_t)
-}
+#get_ft<-function(b0, b1, p_curr, tr_adv, tsim){
+  #p_t<-(1/(1+exp(-(b0+b1*tsim))))
+  #f_t<-(1+tr_adv*p_t)/(1+(tr_adv*p_curr))
+  #return(f_t)
+#}
 
 run_fall_SEIR<-function(par_table, I0bounds, Rt_fall){
 # Get parameter names
@@ -271,8 +271,11 @@ run_fall_SEIR<-function(par_table, I0bounds, Rt_fall){
   
 }
 
-run_spring_SEIR<-function(par_table, case_data_spring, Rt_spring, iRts, spring_last_date, R0s,k_distrib, c_distrib,
-                           p_curr_distrib){
+run_spring_SEIR<-function(par_table, case_data_spring, Rt_spring, iRts, spring_last_date, R0s,k_tr_adv_distrib, k_p_distrib,
+                          c_distrib, p_curr_distrib){
+  # k_p_distrib is the growth rate use to describe the prevalence over time
+  # k_tr_adv_distrib is the growth rate used to calculate transmissibility advantage
+  # In one case (only using UT data) these will be the same, in the other (using literature values for k_tr_adv) these will differ
 
   var_names<-colnames(par_table)
   for (i in 1:length(var_names)){
@@ -307,14 +310,12 @@ run_spring_SEIR<-function(par_table, case_data_spring, Rt_spring, iRts, spring_l
   init_prev<-rbeta(n=nsamps, shape1 = 1+n_pos_first_week, shape2 = 1+n_tests_first_week-n_pos_first_week)
   for( i in 1:nsamps){
     p_curr<-p_curr_distrib[i] 
-    k<-k_distrib[i]
+    k_p<-k_p_distrib[i]
+    k_tr_adv<-k_tr_adv_distrib[i]
     c<-c_distrib[i]
-    tr_adv<-exp(mean_GI*k) -1 # M-1
-    
-    #tr_adv<-tr_adv_distrib[i] function of  exp(b1*g_time)
-    # f_t must correspond to the correct b0, b1, pcurr, and tr_adv parameters
-    f_ts[,i]<-get_ft(c, k, p_curr, tr_adv, tsim)
-    p_ts[,i] = (1/(1+exp(-(c+k*tsim))))
+    tr_adv<-exp(mean_GI*k_tr_adv) -1 # M-1
+    p_ts[,i] <-(1/(1+exp(-(c+k_p*tsim))))
+    f_ts[,i]<-(1+tr_adv*p_ts[,i])/(1+(tr_adv*p_curr)) 
     
   }
   
