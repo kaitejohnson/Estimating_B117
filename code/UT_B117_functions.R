@@ -1,5 +1,225 @@
 # Functions used to generate the outputs called in UT_B117_main.Rmd
 
+fit_SGTF_data<-function(ut, beta_pars, spring_arrival_date, spring_end_semester_date, nsim){
+
+n_future<-as.numeric(spring_end_semester_date-spring_arrival_date)
+par_names<-colnames(beta_pars)
+for (i in 1:length(par_names)){
+  assign(par_names[i], as.double(beta_pars[i]))
+}
+## Select a date for time=0
+mydate0 <- spring_arrival_date-1
+
+## Data frame for fitting
+ut_fit <- ut %>%
+  mutate(time = as.numeric(test_date) - as.numeric(ymd(mydate0)))
+
+## Dataframe for predicting in the future
+ut_future <- rbind(
+  ut_fit %>% mutate(period = "calibration"),
+  ut_fit[rep(1, n_future), ] %>%
+    mutate(test_date = max(ut_fit$test_date) + 1:n_future) %>%
+    mutate(time = as.numeric(test_date) - as.numeric(ymd(mydate0))) %>%
+    mutate(period = "projection")
+)
+
+
+###############################################################################
+#  Fit a model for B117 growth at UT  #
+###############################################################################
+
+
+## Estimate a logistic growth model for B117 prevalence, while
+## integrating over uncertainty in the B117/SGTF fraction. 
+## 
+## One Monte Carlo draw of this model works as follows -- (i) take a
+## draw from the beta distribution described above for the fraction of
+## B117/SGTF, (ii) impute B117 cases by multiplying SGTF cases by this
+## draw from the beta, (iii) estimate the logistic growth model using
+## this set of imputed B117 case numbers, and finally (iv) project
+## future B117 prevalence using this model.  We combine all draws for
+## projected B117 prevalence to integrate over uncertainty in the
+## fraction of B117 to SGTF samples
+
+## One Monte Carlo draw of this model works as follows -- (i) take a draw from the beta distribution described above for the fraction of B117/SGTF, (ii) impute B117 cases by multiplying SGTF cases by this draw from the beta, (iii) estimate the logistic growth model using this set of imputed B117 case numbers, and finally (iv) project future B117 prevalence using this model.  We combine all draws for projected B117 prevalence to integrate over uncertainty in the fraction of B117 to SGTF samples
+
+
+mypredList <- vector("list", nsim)
+mypredList_insample <- vector("list", nsim)
+
+mypredList2 <- vector("list", nsim)
+mypredList_insample2 <- vector("list", nsim)
+
+
+## Matrix for imputed b117 values
+bmat <- matrix(nrow = nrow(ut_fit), ncol = nsim)
+bmat2 <- matrix(nrow = nrow(ut_fit), ncol = nsim)
+
+## Store dataframes of imputed b117 values
+ut_bk_list <- vector("list", nsim)
+ut_bk2_list <- vector("list", nsim)
+
+## For fitted stan_glm objects
+mystan_list <- vector("list", nsim)
+mystan_list2 <- vector("list", nsim)
+
+mystan_samples_list <- vector("list", nsim)
+mystan_samples_list2 <- vector("list", nsim)
+
+## Date of first report (for fitting "original" estimates)
+date_first_report <- ymd(initial_estimate_date)
+for (k in 1:nsim) {
+  
+  ## Set the seed for reproducibility
+  set.seed(k)
+  
+  cat(sprintf("Performing simulation %i out of %i...\n", k, nsim)) #
+  
+  ## Draw fraction of B117/SGTF
+  mybeta <- rbeta(nrow(ut_fit), a1, b1)
+  mybeta2 <- rbeta(nrow(ut_fit), a2, b2)
+  
+  ## Impute number of B117 cases
+  bvec <- (ut_fit$n_Sdrop * mybeta)
+  bmat[, k] <- bvec
+  
+  bvec2 <- (ut_fit$n_Sdrop * mybeta2)
+  bmat2[, k] <- bvec2
+  
+  ## Create a dataframe for fitting the growth model and store it
+  ut_bk <- ut_fit
+  ut_bk['B117']<-round(bvec)
+  ut_bk<-ut_bk%>%mutate(prop2 = (B117) / n_pos,
+                        prop2_se = sqrt(prop2 * (1 - prop2) / n_pos))
+  
+  ut_bk_list[[k]] <- ut_bk
+  
+  ut_bk2 <- ut_fit
+  ut_bk2['B117']<-round(bvec2)
+  ut_bk2<-ut_bk2%>%mutate(prop2 = (B117) / n_pos,
+                          prop2_se = sqrt(prop2 * (1 - prop2) / n_pos))
+  
+  ut_bk2_list[[k]] <- ut_bk2
+  
+  ## Build the model (original report date)
+  myglm_stan2k <- rstanarm::stan_glm(
+    cbind(B117, n_Sdrop + n_Spos - B117) ~ time,
+    family=binomial,
+    data = ut_bk %>%
+      filter(n_pos >= 1) %>%
+      filter(test_date <= date_first_report)
+  )
+  
+  mystan_list[[k]] <- myglm_stan2k
+  
+  mystan_samples_list[[k]] <- as.matrix(myglm_stan2k)
+  
+  ## Predict the prevalence
+  mypredList[[k]] <- posterior_epred(myglm_stan2k, newdata = ut_future)
+  mypredList_insample[[k]] <- posterior_epred(myglm_stan2k, newdata = ut_bk)
+  
+  ## Build the model
+  myglm_stan2k2 <- rstanarm::stan_glm(
+    cbind(B117, n_Sdrop + n_Spos - B117) ~ time,
+    family=binomial,
+    data = ut_bk2 %>%
+      filter(n_pos >= 1)                              
+  )
+  
+  mystan_list2[[k]] <- myglm_stan2k2
+  
+  mystan_samples_list2[[k]] <- as.matrix(myglm_stan2k2)
+  
+  ## Predict the prevalence
+  mypredList2[[k]] <- posterior_epred(myglm_stan2k2, newdata = ut_future)
+  mypredList_insample2[[k]] <- posterior_epred(myglm_stan2k2, newdata = ut_bk)
+  
+  ## Print out an update
+  cat(sprintf("\n\n***********************\n***********************\n\nSIM %i out of %i...\n\n***********************\n***********************\n\n", k, nsim))
+  
+}
+
+
+
+
+logistic <- function(x) 1 / (1 + exp(-x))
+
+## Concatenate samples of terms in model
+mystan_samples <- mystan_samples_list %>% plyr::rbind.fill.matrix()
+mystan_samples2 <- mystan_samples_list2 %>% plyr::rbind.fill.matrix()
+
+colnames(mystan_samples)
+
+###############################################################################
+#           In sample fit...          #
+###############################################################################
+
+## Original posterior for growth rate (first report)
+mystan_samples <- mystan_samples_list %>% plyr::rbind.fill.matrix()
+mystan_samples[, 2] %>% mean() %>% round(3)
+mystan_samples[, 2] %>% quantile(c(0.025, 0.975)) %>% round(3)
+
+# intercept and growth rate (first report)
+c1_distrib<-mystan_samples[,1]
+k1_distrib<-mystan_samples[,2]
+
+## Updated posterior for growth rate
+mystan_samples2 <- mystan_samples_list2 %>% plyr::rbind.fill.matrix()
+mystan_samples2[, 2] %>% mean() %>% round(3)
+mystan_samples2[, 2] %>% quantile(c(0.025, 0.975)) %>% round(3)
+
+# intercept and growth rate (second report)
+c2_distrib<-mystan_samples2[,1]
+k2_distrib<-mystan_samples2[,2]
+
+## Matrix of prevalence estimates
+mypredSim <- plyr::rbind.fill.matrix(mypredList)
+mypredSim2 <- plyr::rbind.fill.matrix(mypredList2)
+
+## Quantiles of prevalence estimates
+mypred2_intsim <- apply(mypredSim, 2, quantile, probs = c(0.025, 0.5, 0.975, 0.25, 0.75))
+mypred2_intsim2 <- apply(mypredSim2, 2, quantile, probs = c(0.025, 0.5, 0.975, 0.25, 0.75))
+
+# Find the column that corresponds to the current date
+
+iobs<-which.max(ut$test_date)
+p_curr_distrib2<-mypredSim2[,iobs]
+
+
+
+## Dataframe for plotting
+plotdf <- ut_future 
+ut_future['pred'] <- mypred2_intsim[2, ]
+ut_future['pred_lo'] <- mypred2_intsim[1, ]
+ut_future['pred_hi'] <- mypred2_intsim[3, ]
+ut_future['pred_iqr_lo'] <- mypred2_intsim[4, ]
+ut_future['pred_iqr_hi'] <- mypred2_intsim[5, ]
+ut_future['pred2'] <- mypred2_intsim2[2, ]
+ut_future['pred2_lo'] = mypred2_intsim2[1, ]
+ut_future['pred2_hi'] = mypred2_intsim2[3, ]
+ut_future['pred2_iqr_lo'] = mypred2_intsim2[4, ]
+ut_future['pred2_iqr_hi'] = mypred2_intsim2[5, ]
+## Deviance (goodness of fit)
+ut_future['dev']<- -2 * (dbinom(round(rowMeans(bmat)), ut_future$n_pos, ut_future$pred, log=TRUE))
+ut_future['dev2']<- -2 * (dbinom(round(rowMeans(bmat)), ut_future$n_pos, ut_future$pred2, log=TRUE))
+## Remove in-sample proportions for dates not in dataset
+ut_future<-ut_future%>%mutate(prop = ifelse(test_date > max(ut_fit$test_date), NA, prop),
+                              prop_se = ifelse(test_date > max(ut_fit$test_date), NA, prop_se))
+ut_future['blo']<- c(apply(bmat, 1, quantile, 0.025), rep(NA, n_future))
+ut_future['bhi']<- c(apply(bmat, 1, quantile, 0.975), rep(NA, n_future))
+
+ut_future<-ut_future%>%mutate(dataset = ifelse(test_date <= date_first_report,
+                                               "Feb 12",
+                                               "Apr 9")) %>%
+  mutate(dataset = factor(dataset, levels = c("Feb 12", "Apr 9")))
+posterior_list<-list(c1_distrib, k1_distrib, c2_distrib, k2_distrib, p_curr_distrib2, ut_future)
+return(posterior_list)
+}
+
+
+
+
+
 get_daily_p_local<-function(test_data, ARRIVAL_DATE){
 # Convert local infections vector into incidence vector
 days_from_arrival<-as.numeric((test_data[length(test_data[,1]), "date"]) - as.Date(ARRIVAL_DATE))
@@ -155,11 +375,7 @@ Rt_fxn_cases <- function(cases, case_data, arrival, last_reliable_day, MEAN_GI,S
   return(Rt_summary)
 }
 
-#get_ft<-function(b0, b1, p_curr, tr_adv, tsim){
-  #p_t<-(1/(1+exp(-(b0+b1*tsim))))
-  #f_t<-(1+tr_adv*p_t)/(1+(tr_adv*p_curr))
-  #return(f_t)
-#}
+
 
 run_fall_SEIR<-function(par_table, I0bounds, Rt_fall){
 # Get parameter names

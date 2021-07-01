@@ -18,10 +18,17 @@ library(flexmix)
 library(zoo)
 library(DescTools)
 library(dplyr)
+library(tidyverse)
+library(lubridate)
+library(lme4)
+library(rstanarm)
+library(ggpubr)
+options(mc.cores = parallel::detectCores())
+library(cowplot)
 source("UT_B117_functions.R")
-theme_set(theme_cowplot())
-ggplot + background_grid(major = "xy", minor = "xy")
-options(warn = -1)
+theme_set(theme_minimal_grid() + theme(legend.position="top"))
+
+
 ```
 Load in SGTF data and PCT case data
 ```{r}
@@ -75,48 +82,75 @@ Ct_data_daily_long<-Ct_data%>%filter(mean_Ct<QC_thres)%>%
   group_by(test_date, strain)%>%summarise(n = n())
 Ct_data_daily_summary<-Ct_data_daily_long%>%
   pivot_wider(names_from = strain, values_from = n, values_fill = 0)
-Ct_data_daily_summary<-Ct_data_daily_summary%>%group_by(test_date)%>%
+ut<-Ct_data_daily_summary%>%group_by(test_date)%>%
   mutate(n_Sdrop = SGTF,
          n_Spos = non_SGTF,
          n_pos = SGTF+non_SGTF,
-         prev_SGTF = SGTF/n_pos,
-         SE_prev = sqrt(prev_SGTF*(1-prev_SGTF)/n_pos))
+         prop = SGTF/n_pos,
+         prop_se = sqrt(prop*(1-prop)/n_pos))
 # Export the daily data for fitting. Will use this to feed into Woody's SGTF.R code
 write.csv(Ct_data_daily_summary, '../data/Ct_data.csv')
 # Make a dataset used for the initial fitting from data through Feb.
 Ct_data_init<-Ct_data_daily_summary%>%filter(test_date<=initial_estimate_date)
 write.csv(Ct_data_init, '../data/Ct_data_init.csv', row.names = FALSE)
 
+```
 
-# Make figures with frequency of SGTF over time as well as cases colored by SGTF status
+Make figures of daily numbers of SGTF cases and non-SGTF cases, and frequency of SGTF over time
+```{r}
 path ="../out/dailySGTF.png"
-plt_freq<-ggplot(Ct_data_daily_summary, aes(x = test_date, y = 100*(prev_SGTF)), color = "black") + geom_point() + geom_errorbar(aes(ymin = 100*(prev_SGTF - SE_prev), ymax = 100*(prev_SGTF+SE_prev)), width = 0.2, position = position_dodge(0.5))+
-xlab ('Test Collection Date') + ylab ('Frequency (%) of cases that are S dropouts') + ggtitle('Daily frequency of S dropouts with low Ct values')
-plt_freq
+ut %>%
+  filter(n_pos >= 1) %>% 
+  ggplot() +
+  geom_linerange(aes(test_date, ymin = prop - prop_se, ymax = prop + prop_se)) + 
+  geom_point(aes(test_date, prop)) +
+  scale_y_continuous(labels=scales::percent) + 
+  labs(x = "Test Collection Date", y = "Frequency of SGTF among cases") 
 ggsave(filename = path, device = "png", dpi = 700) 
 
 path = "../out/stackedbarSGTF.png"
-stacked<-ggplot(Ct_data_daily_long, aes(x = test_date, y = n, fill = strain))  + geom_bar(position = "stack", stat = "identity") + xlab('Test Collection Date') + ylab('Number of low Ct positives') + theme(legend.position="top")+ scale_fill_discrete(name = "S gene presence", labels = c("S+", "S-"))
+stacked<-ggplot(Ct_data_daily_long, aes(x = test_date, y = n, fill = strain))  + geom_bar(position = "stack", stat = "identity") + xlab('Test Collection Date') + ylab('Number of low Ct positives') + theme(legend.position="top")+ scale_fill_discrete(name = "S gene presence", labels = c("SGTF", "non-SGTF"))
 stacked
 ggsave(filename = path, device = "png", dpi = 700)
+```
 
-# Use SGTF data set to call function to fit the logistic model with uncertainty from SGTF presence. 
+Use SGTF data set to call function to fit the logistic model with uncertainty from SGTF presence. 
+```{r}
+# set prior beta values before we had any sequencing
+a1<-40 
+b1<-10
+# sequencing results 
+a2<-22.5 # 0.5 + NB117 sequenced
+b2<-1.5 # 0.5 + NSGTF - N B117 sequenced
+beta_pars<-data.frame(a1, b1)
+nsim <- 100 #Number of Monte Carlo draws
+
+#Run the function
+posterior_list<-fit_SGTF_data(ut, beta_pars, spring_arrival_date, spring_end_semester_date, nsim)
+
+plotdf<-posterior_list[[6]]
 
 #output: c and k in logistic growth model (intercept and growth rate), current B117 prevalence
 # Early estimate: Jan 16- Feb. 12 (probably won't need this)
 c1 = -2.861
-c1_distrib<-runif(n= nsamps, min = -2.9, max = -2.83)
+c1_distrib<-posterior_list[[1]]
+#c1_distrib<-runif(n= nsamps, min = -2.9, max = -2.83)
 k1 = 0.077
-k1_distrib<-runif(n= nsamps, min = 0.017, max = 0.140) # logistic growth rate parameter bounds
+k1_distrib<-posterior_list[[2]]
+#k1_distrib<-runif(n= nsamps, min = 0.017, max = 0.140) # logistic growth rate parameter bounds
 
 # Use later estimate (Jan 16- April 9) for p(t) and transmissibiltiy advantage
 c = -2.861
-c_distrib<-runif(n= nsamps, min = -2.9, max = -2.83)
+c_distrib<-posterior_list[[3]]
+#c_distrib<-runif(n= nsamps, min = -2.9, max = -2.83)
 k_p = 0.040
-k_p_distrib = runif(n=nsamps, min = 0.037, max = 0.043)
+k_p_distrib<-posterior_list[[4]]
+k_p_CI<-k_p_distrib %>% quantile(c(0.025, 0.5, 0.975)) %>% round(3)
+#k_p_distrib = runif(n=nsamps, min = 0.037, max = 0.043)
 p_curr = 0.627
-p_curr_distrib<-runif(nsamps, 0.501, 0.739)
-
+p_curr_distrib<-posterior_list[[5]]
+#p_curr_distrib<-runif(nsamps, 0.501, 0.739)
+p_curr_CI<-p_curr_distrib %>% quantile(c(0.025, 0.5, 0.975)) %>% round(3)
 
 
 
@@ -128,7 +162,86 @@ M1_distrib = exp(mean_GI*k1_distrib)
 M2_distrib = exp(mean_GI*k_p_distrib) # This should probably be a function of b0 and b1? 
 M_CI<-quantile(M2_distrib, probs = c(0.025, 0.5, 0.975))
 
+
+
 ```
+Plot the B117 prevalence output
+```{r}
+
+## Weekly summaries of prevalence
+ut_weekly <- ut %>%
+  mutate(eweek = epiweek(test_date),
+         weekday = wday(test_date, label=TRUE)) %>%
+  group_by(eweek) %>%
+  summarize(prop = sum(n_Sdrop) / sum(n_pos),
+            n = sum(n_pos),
+            test_date = test_date[weekday == "Wed"],
+            prop_se = sqrt(prop * (1 - prop) / n)) %>%
+  mutate(dataset = ifelse(test_date <= initial_estimate_date,
+                          "Feb 12",
+                          "Apr 9")) %>%
+  glimpse()
+
+## Quantiles of beta distribution (for expanding confidence intervals)
+myqs <- qbeta(c(0.025, 0.975, 0.5), a2, b2)
+
+path = "../out/comp_weekly.png"
+comp_plot2 <- plotdf %>%
+  ggplot() +
+  ## Prevalence curve estimate and interval for Feb 12 report
+  geom_ribbon(aes(test_date, ymin=pred_lo, ymax=pred_hi, fill = "Feb 12"), alpha=0.2,size=0.5) +
+  geom_line(aes(test_date, pred, col = "Feb 12"), size=0.75) +
+  ## Prevalence curve estimate and interval for updated Apr 9 report
+  geom_ribbon(aes(test_date, ymin=pred2_lo, ymax=pred2_hi, fill = "Apr 9"), alpha=0.2,size=0.5) +
+  geom_line(aes(test_date, pred2, col = "Apr 9"), size=0.75) +
+  ## Point estimates and 95% confidence intervals for test sample prevalence
+  ## (i.e. from data)
+  geom_linerange(data = ut_weekly,
+                 aes(test_date,
+                     ymin = pmax(0, myqs[1] * (prop - 1.96 * prop_se)),
+                     ymax = pmin(1, myqs[2] * (prop + 1.96 * prop_se)))) +
+  geom_point(data = ut_weekly %>% filter(n>=1),
+             aes(test_date, prop * myqs[3],
+                 size=n,
+                 ## shape = dataset,
+                 color = dataset,
+                 )) +
+  ## Adjust the scales
+  scale_y_continuous(labels=scales::percent) +
+  scale_color_manual("Estimated growth", values=c("dodgerblue3", "darkgreen"),
+                     breaks = c("Feb 12", "Apr 9")) +
+  scale_fill_manual("Estimated growth", values=c("dodgerblue3", "darkgreen"),
+                    breaks = c("Feb 12", "Apr 9")) +
+  scale_shape_manual("Estimated prevalence", values=c(19, 1),
+                     breaks = c("Feb 12", "Apr 9")) +
+  scale_size("Sample size") +
+  scale_x_date(date_labels="%b %d", limits = c(spring_arrival_date, spring_end_semester_date)) +
+  ## Axis labels
+  labs(
+    x = "",
+    y = "Frequency of B.1.1.7 among cases"## ,
+       ## caption = "Source: UT-Austin HTTC"
+  )  +
+  ## Adjust details
+  theme(legend.position="top",
+        ## legend.title = element_text(face="bold"),
+        legend.direction = "horizontal",
+        ## axis.title = element_text(face="bold")
+        )+
+  guides(shape = guide_legend(title.position = "top"),
+         size = guide_legend(title.position = "top"),
+         color = guide_legend(title.position = "top"),
+         fill = guide_legend(title.position = "top")) +
+  NULL
+
+comp_plot2
+
+ggsave(filename = path, device = "png", dpi = 700)
+
+```
+
+
+
 Load in the logistic growth model outputs (posterior distributions of the y-intercept and growth rate, and the current estimate of the B117 prevalence)** These will be used as inputs into the SEIR model**
 ```{r}
 
@@ -252,41 +365,12 @@ out_list<-run_spring_SEIR(spring_par_table, case_data_spring, Rt_summary_spring,
 
 df_t_sim2<-out_list[[1]] # contains the time course of runs for 500 simulations for both scenarios
 df_t2<-out_list[[2]] # contains the median and bounds of the time course runs for both scenarios
-df_summary<-out_list[[3]] # contains all the summary statistics for static variables
+df_summary2<-out_list[[3]] # contains all the summary statistics for static variables
 df_t_sim['I_variant_lit']<-df_t_sim2$I_variant
 df_t['Imedian_lit']<-df_t2$Imedianv
 
 ```
-Troubleshoot davies et al
-```{r}
-springdates <- seq(Rt_summary_spring$dates[1], spring_end_semester_date, "days")
- tsim<-seq(from = 0, to = length(springdates)-1, by = dt)
-  f_ts<-matrix(nrow = length(tsim), ncol = nsamps)
-  p_ts<-matrix(nrow = length(tsim), ncol = nsamps)
-  
-for( i in 1:nsamps){
-    p_curr<-p_curr_distrib[i] 
-    k<-kl_distrib[i]
-    c<-c2_distrib[i]
-    tr_adv<-exp(mean_GI*k) -1 # M-1
-    
-    #tr_adv<-tr_adv_distrib[i] function of  exp(b1*g_time)
-    # f_t must correspond to the correct b0, b1, pcurr, and tr_adv parameters
-    f_ts[,i]<-get_ft(c, k, p_curr, tr_adv, tsim)
-    p_ts[,i] = (1/(1+exp(-(c+k*tsim))))
-    
-  }
-  
-  
-  f_t_median<-apply( f_ts , 1 , quantile , probs = 0.5 , na.rm = TRUE )
-  f_t_lb<-apply( f_ts , 1 , quantile , probs = 0.025 , na.rm = TRUE )
-  f_t_ub<-apply( f_ts , 1 , quantile , probs = 0.975 , na.rm = TRUE )
-  df_test<-data.frame(tsim, f_t_median, f_t_lb, f_t_ub)
-  
-test<-ggplot(df_test) + geom_line(aes(x = tsim, y = f_t_median)) + 
-  geom_ribbon(aes(x =tsim, ymin = f_t_lb, ymax = f_t_ub), alpha = 0.1)
-test
-```
+
 Make some plots of the infection projection outputs
 ```{r}
 #Factor increase in transmission rate over time
@@ -328,6 +412,11 @@ fast_only<-ggplot() + geom_line(data = df_fast, aes(x = dates, y = 1000*I_varian
 fast_only
 ggsave(filename = path, device = "png", dpi = 1000, width = 7, height = 5, units="in")
 save.image(file="foobar.Rdata")
+
+path ="../out/figure1.png"
+figure1<-ggarrange(fast_only, comp_plot2, ncol = 1, nrow = 2, common.legend = TRUE, legend = "right")
+figure1
+ggsave(filename = path, device = "png", dpi = 1000, width = 7, height = 10, units="in")
 
 
 # all 4 scenarios median model lines
