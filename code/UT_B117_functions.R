@@ -83,8 +83,10 @@ for (k in 1:nsim) {
   bvec <- (ut_fit$n_Sdrop * mybeta)
   bmat[, k] <- bvec
   
-  bvec2 <- (ut_fit$n_Sdrop * mybeta2)
+  bvec2 <- (ut_fit$n_Sdrop * mybeta2) + ut_fit$n_Spos * runif(1, 0.01, 0.05)
+  # second term accounts for the 1-5% chance of a non-SGTF being B117
   bmat2[, k] <- bvec2
+  
   
   ## Create a dataframe for fitting the growth model and store it
   ut_bk <- ut_fit
