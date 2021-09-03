@@ -1,8 +1,9 @@
 # Functions used to generate the outputs called in UT_B117_main.Rmd
 
-fit_SGTF_data<-function(ut, beta_pars, spring_arrival_date, spring_end_semester_date, nsim){
+fit_SGTF_data<-function(ut, beta_pars, spring_arrival_date,initial_estimate_date, spring_last_date, spring_end_semester_date, nsim){
 
-n_future<-as.numeric(spring_end_semester_date-spring_arrival_date)
+#n_future<-as.numeric(spring_end_semester_date-spring_arrival_date)
+
 par_names<-colnames(beta_pars)
 for (i in 1:length(par_names)){
   assign(par_names[i], as.double(beta_pars[i]))
@@ -11,17 +12,17 @@ for (i in 1:length(par_names)){
 mydate0 <- spring_arrival_date-1
 
 ## Data frame for fitting
-ut_fit <- ut %>%
-  mutate(time = as.numeric(test_date) - as.numeric(ymd(mydate0)))
+ut_fit <- ut %>% filter(test_date<=spring_last_date)%>%
+  mutate(time = as.numeric(test_date) - as.numeric(ymd(mydate0)),
+         period = "calibration")
+
+ut_validate<-ut%>%filter(test_date>spring_last_date)%>%
+                           mutate(time = as.numeric(test_date) - as.numeric(ymd(mydate0)),
+                           period = "projection")
+
 
 ## Dataframe for predicting in the future
-ut_future <- rbind(
-  ut_fit %>% mutate(period = "calibration"),
-  ut_fit[rep(1, n_future), ] %>%
-    mutate(test_date = max(ut_fit$test_date) + 1:n_future) %>%
-    mutate(time = as.numeric(test_date) - as.numeric(ymd(mydate0))) %>%
-    mutate(period = "projection")
-)
+ut_future <- rbind(ut_fit, ut_validate)
 
 
 ###############################################################################
@@ -184,7 +185,7 @@ mypred2_intsim2 <- apply(mypredSim2, 2, quantile, probs = c(0.025, 0.5, 0.975, 0
 
 # Find the column that corresponds to the current date
 
-iobs<-which.max(ut$test_date)
+iobs<-which(ut$test_date == spring_last_date)
 p_curr_distrib2<-mypredSim2[,iobs]
 
 
@@ -205,15 +206,19 @@ ut_future['pred2_iqr_hi'] = mypred2_intsim2[5, ]
 ut_future['dev']<- -2 * (dbinom(round(rowMeans(bmat)), ut_future$n_pos, ut_future$pred, log=TRUE))
 ut_future['dev2']<- -2 * (dbinom(round(rowMeans(bmat)), ut_future$n_pos, ut_future$pred2, log=TRUE))
 ## Remove in-sample proportions for dates not in dataset
-ut_future<-ut_future%>%mutate(prop = ifelse(test_date > max(ut_fit$test_date), NA, prop),
-                              prop_se = ifelse(test_date > max(ut_fit$test_date), NA, prop_se))
-ut_future['blo']<- c(apply(bmat, 1, quantile, 0.025), rep(NA, n_future))
-ut_future['bhi']<- c(apply(bmat, 1, quantile, 0.975), rep(NA, n_future))
+n_projected<-nrow(ut_future) - nrow(ut_fit)
+ut_future['blo']<- c(apply(bmat, 1, quantile, 0.025), rep(NA, n_projected))
+ut_future['bhi']<- c(apply(bmat, 1, quantile, 0.975), rep(NA, n_projected))
 
-ut_future<-ut_future%>%mutate(dataset = ifelse(test_date <= date_first_report,
-                                               "Feb 12",
-                                               "Apr 9")) %>%
-  mutate(dataset = factor(dataset, levels = c("Feb 12", "Apr 9")))
+mydates <- c("Feb 12", "Apr 9", "May 23")
+
+ut_future<-ut_future%>%
+  mutate(dataset = case_when(
+    test_date <= date_first_report ~ mydates[1],
+    test_date <= spring_last_date ~ mydates[2],
+    TRUE ~ mydates[3]
+  )) %>%
+  mutate(dataset = factor(dataset, levels = mydates))
 posterior_list<-list(c1_distrib, k1_distrib, c2_distrib, k2_distrib, p_curr_distrib2, ut_future)
 return(posterior_list)
 }
@@ -387,14 +392,14 @@ run_fall_SEIR<-function(par_table, I0bounds, Rt_fall){
   }
   dates<-Rt_fall$dates
   tsim<-seq(from = 0, to = length(dates)-1, by=dt)
-  Rt_cap<-2.5 # assume Rt never gets above this 
+  #Rt_cap<-2.5 # assume Rt never gets above this 
   # sample from uncertainty in Rts and
   Rts<-matrix(nrow=length(dates), ncol=nsamps) # rows are time, columns are samples 
   for (i in 1:length(dates)){
     mean_val<-Rt_fall$Rt_mean[i]
-    if(mean_val>Rt_cap){ # Set a cap on R(t)
-      mean_val <-Rt_cap
-    }
+    #if(mean_val>Rt_cap){ # Set a cap on R(t)
+      #mean_val <-Rt_cap
+    #}
     var<-Rt_fall$Rt_var[i]
     b<-mean_val/var
     a<-mean_val*b
